@@ -1,0 +1,7 @@
+{
+  "id": "proxima-host-counter",
+  "name": "Host request counter",
+  "version": "0.1.0",
+  "description": "Example plugin that counts requests per host and logs via host function.",
+  "hooks": ["on_new_flow"]
+}

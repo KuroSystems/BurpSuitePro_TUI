@@ -1,0 +1,7 @@
+/target
+*.log
+logs/
+certs/
+*.db
+*.db-wal
+*.db-shm

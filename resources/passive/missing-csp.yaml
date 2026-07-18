@@ -1,0 +1,9 @@
+id: missing-csp
+name: Content-Security-Policy header missing
+severity: low
+confidence: firm
+passive_checks:
+  - type: header_missing
+    name: content-security-policy
+references:
+  - https://developer.mozilla.org/docs/Web/HTTP/CSP

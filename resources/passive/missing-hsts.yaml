@@ -1,0 +1,9 @@
+id: missing-hsts
+name: Strict-Transport-Security header missing
+severity: medium
+confidence: firm
+passive_checks:
+  - type: header_missing
+    name: strict-transport-security
+references:
+  - https://developer.mozilla.org/docs/Web/HTTP/Headers/Strict-Transport-Security
