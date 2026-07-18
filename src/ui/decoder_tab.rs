@@ -33,7 +33,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let mut textarea = TextArea::from(app.decoder_input.lines().map(ToOwned::to_owned).collect::<Vec<_>>());
     textarea.set_block(Block::default().title(" Input ").borders(Borders::ALL));
     textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(textarea.widget(), area);
+    frame.render_widget(&textarea, area);
 }
 
 fn render_chain(frame: &mut Frame, app: &App, area: Rect) {

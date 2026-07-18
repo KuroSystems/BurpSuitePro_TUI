@@ -323,7 +323,10 @@ fn push_passive_rule_draft_lines(lines: &mut Vec<Line<'static>>, draft: &Passive
     lines.push(Line::from(vec![
         Span::styled(if valid { " VALID " } else { " INVALID " }, Style::default().fg(Color::Black).bg(if valid { Color::Green } else { Color::Red }).add_modifier(Modifier::BOLD)),
         Span::raw(" "),
-        Span::styled(if draft.rule_id.is_empty() { "<no id>" } else { draft.rule_id.as_str() }, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if draft.rule_id.is_empty() { "<no id>".to_string() } else { draft.rule_id.clone() },
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         draft_confidence_span(draft.confidence),
     ]));

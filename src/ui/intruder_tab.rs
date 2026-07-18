@@ -71,7 +71,7 @@ fn render_request_editor(frame: &mut Frame, app: &App, area: Rect) {
     );
     textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
     textarea.set_cursor_line_style(Style::default().bg(Color::Black));
-    frame.render_widget(textarea.widget(), area);
+    frame.render_widget(&textarea, area);
 }
 
 fn render_config(frame: &mut Frame, app: &App, area: Rect) {

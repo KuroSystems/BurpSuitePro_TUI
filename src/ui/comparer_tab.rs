@@ -43,7 +43,7 @@ fn render_input(frame: &mut Frame, title: &str, value: &str, focused: bool, area
             .border_style(if focused { Style::default().fg(Color::Cyan) } else { Style::default() }),
     );
     textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(textarea.widget(), area);
+    frame.render_widget(&textarea, area);
 }
 
 fn render_diff(frame: &mut Frame, app: &App, area: Rect) {
