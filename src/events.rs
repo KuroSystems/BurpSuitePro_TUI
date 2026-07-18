@@ -25,6 +25,7 @@ pub enum Event {
     Render,
     Key(KeyEvent),
     Mouse(MouseEvent),
+    Paste(String),
     Resize(u16, u16),
     ProxyEvent(ProxyEvent),
     RepeaterEvent(RepeaterEvent),

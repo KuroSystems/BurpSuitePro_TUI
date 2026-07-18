@@ -447,6 +447,8 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" ←/→ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
         Span::raw(" switch tabs  "),
         Span::styled(tab_hint, Style::default().fg(Color::Black).bg(Color::Cyan)),
+        Span::styled(" Alt+C/V ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::raw(" copy/paste box  "),
         Span::styled(" Ctrl+C ", Style::default().fg(Color::Black).bg(Color::Red)),
         Span::raw(" quit  "),
         Span::styled(" s/x ", Style::default().fg(Color::Black).bg(Color::Yellow)),

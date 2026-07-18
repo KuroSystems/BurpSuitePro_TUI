@@ -187,6 +187,7 @@ pub struct App {
     pub rename_buffer: String,
     pub database: Database,
     pub project_message: String,
+    pub local_clipboard: String,
     pub scope_engine: ScopeEngine,
     pub selected_scope_rule: usize,
     pub scope_input_mode: Option<ScopeInputMode>,
@@ -325,6 +326,7 @@ impl App {
             rename_buffer: String::new(),
             database,
             project_message,
+            local_clipboard: String::new(),
             scope_engine: ScopeEngine::new(scope_rules),
             selected_scope_rule: 0,
             scope_input_mode: None,
@@ -408,6 +410,7 @@ impl App {
             Event::Tick => self.tick(),
             Event::Key(key) => self.handle_key_event(key),
             Event::Mouse(mouse) => self.handle_mouse_event(mouse),
+            Event::Paste(text) => self.handle_paste(text),
             Event::Resize(width, height) => self.terminal_size = (width, height),
             Event::ProxyEvent(event) => self.handle_proxy_event(event),
             Event::RepeaterEvent(event) => self.handle_repeater_event(event),
@@ -737,6 +740,10 @@ impl App {
             return;
         }
 
+        if self.handle_local_clipboard_key(key) {
+            return;
+        }
+
         if self.current_tab == Tab::Settings && self.handle_settings_key(key) {
             return;
         }
@@ -803,6 +810,65 @@ impl App {
             (KeyCode::Char('G'), _) if self.current_tab == Tab::Proxy => self.select_last_flow(),
             (KeyCode::Char('/'), _) if self.current_tab == Tab::Proxy => self.search_mode = true,
             _ => {}
+        }
+    }
+
+    fn handle_local_clipboard_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('c'), KeyModifiers::ALT) => {
+                if let Some(text) = self.active_editable_text() {
+                    self.local_clipboard = text;
+                    self.project_message = format!("Copied {} bytes to internal clipboard", self.local_clipboard.len());
+                } else {
+                    self.project_message = "No editable box selected to copy".to_string();
+                }
+                true
+            }
+            (KeyCode::Char('v'), KeyModifiers::ALT) => {
+                if self.local_clipboard.is_empty() {
+                    self.project_message = "Internal clipboard is empty".to_string();
+                } else {
+                    self.handle_paste(self.local_clipboard.clone());
+                    self.project_message = "Pasted from internal clipboard".to_string();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn active_editable_text(&self) -> Option<String> {
+        match self.current_tab {
+            Tab::Ai => Some(self.ai_panel.input.clone()),
+            Tab::Repeater => {
+                if self.renaming_repeater {
+                    Some(self.rename_buffer.clone())
+                } else if self.repeater_ai_mode == RepeaterAiMode::Prompt {
+                    Some(self.repeater_ai_input.clone())
+                } else {
+                    self.active_repeater_tab().map(|tab| tab.request_text.clone())
+                }
+            }
+            Tab::Intruder => {
+                if matches!(self.intruder_ai_mode, IntruderAiMode::PayloadPrompt | IntruderAiMode::PlannerPrompt) {
+                    Some(self.intruder_ai_input.clone())
+                } else {
+                    Some(self.intruder_request_text.clone())
+                }
+            }
+            Tab::Decoder => Some(self.decoder_input.clone()),
+            Tab::Comparer => Some(if self.comparer_focus_right { self.comparer_right.clone() } else { self.comparer_left.clone() }),
+            Tab::Scope => {
+                if self.scope_ai_mode == ScopeAiMode::Prompt {
+                    Some(self.scope_ai_input.clone())
+                } else if self.scope_input_mode.is_some() {
+                    Some(self.scope_buffer.clone())
+                } else {
+                    None
+                }
+            }
+            Tab::Scanner if self.scanner_ai_mode == ScannerAiMode::RulePrompt => Some(self.scanner_ai_input.clone()),
+            _ => None,
         }
     }
 
@@ -2416,6 +2482,68 @@ impl App {
         self.project_message = "Discarded AI scope proposal".to_string();
     }
 
+    fn handle_paste(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        if self.search_mode {
+            self.search_query.push_str(&text.replace('\r', "").replace('\n', ""));
+            self.ensure_selected_matches_filter();
+            return;
+        }
+
+        match self.current_tab {
+            Tab::Ai => {
+                self.ai_panel.input.push_str(&text);
+            }
+            Tab::Repeater => {
+                if self.renaming_repeater {
+                    self.rename_buffer.push_str(text.trim());
+                } else if self.repeater_ai_mode == RepeaterAiMode::Prompt {
+                    self.repeater_ai_input.push_str(&text);
+                } else if self.repeater_ai_mode == RepeaterAiMode::Editing {
+                    self.insert_repeater_text(&text);
+                }
+            }
+            Tab::Intruder => {
+                if matches!(self.intruder_ai_mode, IntruderAiMode::PayloadPrompt | IntruderAiMode::PlannerPrompt) {
+                    self.intruder_ai_input.push_str(&text);
+                } else if self.intruder_ai_mode == IntruderAiMode::Editing {
+                    self.intruder_request_text.push_str(&text.replace("\r\n", "\n"));
+                    self.intruder_plan_payload_sets.clear();
+                }
+            }
+            Tab::Decoder => {
+                if self.decoder_ai_mode == DecoderAiMode::Editing {
+                    self.decoder_input.push_str(&text.replace("\r\n", "\n"));
+                }
+            }
+            Tab::Comparer => {
+                if self.comparer_detail_mode == ComparerDetailMode::AiSummary {
+                    self.discard_comparer_ai_summary();
+                }
+                if self.comparer_focus_right {
+                    self.comparer_right.push_str(&text.replace("\r\n", "\n"));
+                } else {
+                    self.comparer_left.push_str(&text.replace("\r\n", "\n"));
+                }
+            }
+            Tab::Scope => {
+                if self.scope_ai_mode == ScopeAiMode::Prompt {
+                    self.scope_ai_input.push_str(&text);
+                } else if self.scope_input_mode.is_some() {
+                    self.scope_buffer.push_str(text.trim());
+                }
+            }
+            Tab::Scanner => {
+                if self.scanner_ai_mode == ScannerAiMode::RulePrompt {
+                    self.scanner_ai_input.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         match self.current_tab {
             Tab::Proxy => match mouse.kind {
@@ -2437,8 +2565,34 @@ impl App {
                 MouseEventKind::ScrollUp => {
                     self.repeater_response_scroll = self.repeater_response_scroll.saturating_sub(1)
                 }
+                MouseEventKind::Down(_) => {
+                    if self.repeater_ai_mode != RepeaterAiMode::Prompt {
+                        self.repeater_ai_mode = RepeaterAiMode::Editing;
+                    }
+                    if let Some(tab) = self.repeater_tabs.get(self.active_repeater) {
+                        self.repeater_cursor = self.repeater_cursor.min(tab.request_text.len());
+                    }
+                }
                 _ => {}
             },
+            Tab::Comparer => {
+                if let MouseEventKind::Down(_) = mouse.kind {
+                    let (width, _) = self.terminal_size;
+                    self.comparer_focus_right = mouse.column >= width / 2;
+                    self.project_message = if self.comparer_focus_right {
+                        "Focused comparer right box".to_string()
+                    } else {
+                        "Focused comparer left box".to_string()
+                    };
+                }
+            }
+            Tab::Decoder => {
+                if let MouseEventKind::Down(_) = mouse.kind {
+                    if self.decoder_ai_mode == DecoderAiMode::SuggestionPreview {
+                        self.decoder_ai_mode = DecoderAiMode::Editing;
+                    }
+                }
+            }
             Tab::Scanner => {
                 if let MouseEventKind::Down(_) = mouse.kind {
                     let row = mouse.row.saturating_sub(5) as usize;
@@ -2711,6 +2865,15 @@ impl App {
             self.repeater_cursor = self.repeater_cursor.min(tab.request_text.len());
             tab.request_text.insert(self.repeater_cursor, char);
             self.repeater_cursor += char.len_utf8();
+        }
+    }
+
+    fn insert_repeater_text(&mut self, text: &str) {
+        if let Some(tab) = self.repeater_tabs.get_mut(self.active_repeater) {
+            self.repeater_cursor = self.repeater_cursor.min(tab.request_text.len());
+            let text = text.replace("\r\n", "\n");
+            tab.request_text.insert_str(self.repeater_cursor, &text);
+            self.repeater_cursor += text.len();
         }
     }
 

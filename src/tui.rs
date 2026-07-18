@@ -6,7 +6,8 @@ use std::{
 use color_eyre::eyre::{Context, Result};
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, EventStream,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event as CrosstermEvent, EventStream,
     },
     execute,
     terminal::{
@@ -53,7 +54,7 @@ impl Tui {
         enable_raw_mode().wrap_err("failed to enable raw mode")?;
 
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)
             .wrap_err("failed to enter alternate screen")?;
 
         let backend = CrosstermBackend::new(stdout);
@@ -134,7 +135,8 @@ impl Tui {
         execute!(
             self.terminal.backend_mut(),
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            DisableBracketedPaste
         )
         .wrap_err("failed to leave alternate screen")?;
         self.terminal
@@ -148,10 +150,9 @@ impl Tui {
         match event {
             CrosstermEvent::Key(key) => Some(Event::Key(key)),
             CrosstermEvent::Mouse(mouse) => Some(Event::Mouse(mouse)),
+            CrosstermEvent::Paste(text) => Some(Event::Paste(text)),
             CrosstermEvent::Resize(width, height) => Some(Event::Resize(width, height)),
-            CrosstermEvent::FocusGained
-            | CrosstermEvent::FocusLost
-            | CrosstermEvent::Paste(_) => None,
+            CrosstermEvent::FocusGained | CrosstermEvent::FocusLost => None,
         }
     }
 }
