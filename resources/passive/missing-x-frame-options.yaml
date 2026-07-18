@@ -1,0 +1,9 @@
+id: missing-x-frame-options
+name: X-Frame-Options header missing
+severity: low
+confidence: firm
+passive_checks:
+  - type: header_missing
+    name: x-frame-options
+references:
+  - https://developer.mozilla.org/docs/Web/HTTP/Headers/X-Frame-Options

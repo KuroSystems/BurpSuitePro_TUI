@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux static x86_64 musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: taiki-e/install-action@cross
+      - run: cross build --release --target x86_64-unknown-linux-musl
+      - run: |
+          mkdir -p artifacts
+          cp target/x86_64-unknown-linux-musl/release/proxima-tui artifacts/proxima-tui-x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxima-tui-x86_64-unknown-linux-musl
+          path: artifacts/proxima-tui-x86_64-unknown-linux-musl
+
+  windows:
+    name: Windows x86_64 GNU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: taiki-e/install-action@cross
+      - run: cross build --release --target x86_64-pc-windows-gnu
+      - run: |
+          mkdir -p artifacts
+          cp target/x86_64-pc-windows-gnu/release/proxima-tui.exe artifacts/proxima-tui-x86_64-pc-windows-gnu.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxima-tui-x86_64-pc-windows-gnu
+          path: artifacts/proxima-tui-x86_64-pc-windows-gnu.exe
+
+  macos:
+    name: macOS ${{ matrix.target }}
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/proxima-tui artifacts/proxima-tui-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxima-tui-${{ matrix.target }}
+          path: artifacts/proxima-tui-${{ matrix.target }}
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*

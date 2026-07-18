@@ -1,0 +1,10 @@
+id: server-disclosure
+name: Server version banner disclosure
+severity: info
+confidence: firm
+passive_checks:
+  - type: header_contains
+    name: server
+    value_regex: '(?i)(apache|nginx|iis|express|jetty|tomcat|gunicorn|uvicorn|php|openresty)[/ ]?[0-9]'
+references:
+  - https://owasp.org/www-project-web-security-testing-guide/

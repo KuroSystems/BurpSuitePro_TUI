@@ -1,0 +1,9 @@
+id: reflected-xss-markers
+name: Reflected script marker
+severity: high
+confidence: tentative
+passive_checks:
+  - type: body_regex
+    pattern: '(?i)<script[^>]*>|javascript:|onerror='
+references:
+  - https://owasp.org/www-community/attacks/xss/
