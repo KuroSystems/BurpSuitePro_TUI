@@ -17,7 +17,13 @@ mod repeater_tab;
 mod scanner_tab;
 mod websocket_tab;
 
-use crate::app::{App, Tab};
+use crate::{
+    app::{App, ScopeAiMode, Tab},
+    models::{
+        ai::{ScopeRuleProposal, ScopeRuleProposalState},
+        scope::{ScopeEngine, ScopeRule, ScopeRuleType},
+    },
+};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = Layout::default()
@@ -82,11 +88,29 @@ fn render_current_tab(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_scope(frame: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(5)])
-        .split(area);
+    let ai_active = app.scope_ai_mode != ScopeAiMode::Editing;
+    let chunks = if ai_active {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(42), Constraint::Min(0), Constraint::Length(4)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(5), Constraint::Length(0)])
+            .split(area)
+    };
 
+    render_scope_rules_table(frame, app, chunks[0]);
+    if ai_active {
+        render_scope_ai_assistant(frame, app, chunks[1]);
+        render_scope_controls(frame, app, chunks[2]);
+    } else {
+        render_scope_controls(frame, app, chunks[1]);
+    }
+}
+
+fn render_scope_rules_table(frame: &mut Frame, app: &App, area: Rect) {
     let rows = app.scope_engine.rules.iter().map(|rule| {
         Row::new(vec![
             Cell::from(rule.id.to_string()),
@@ -116,8 +140,10 @@ fn render_scope(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Some(app.selected_scope_rule)
     });
-    frame.render_stateful_widget(table, chunks[0], &mut state);
+    frame.render_stateful_widget(table, area, &mut state);
+}
 
+fn render_scope_controls(frame: &mut Frame, app: &App, area: Rect) {
     let input = match app.scope_input_mode {
         Some(crate::app::ScopeInputMode::Add) => format!(" add regex: {}_", app.scope_buffer),
         Some(crate::app::ScopeInputMode::Edit) => format!(" edit regex: {}_", app.scope_buffer),
@@ -128,8 +154,13 @@ fn render_scope(frame: &mut Frame, app: &App, area: Rect) {
         .last_scope_test_result
         .map(|in_scope| format!(" test {} => {}", app.scope_test_url, if in_scope { "in scope" } else { "out of scope" }))
         .unwrap_or_default();
+    let mode_help = match app.scope_ai_mode {
+        ScopeAiMode::Prompt => "AI prompt: Enter generate  Esc cancel",
+        ScopeAiMode::ProposalPreview => "AI proposal: a append  R replace  d/Esc discard  Ctrl+K regenerate",
+        ScopeAiMode::Editing => "Ctrl+K AI assistant  a add  e edit  d delete  Space enable/disable  i include  o exclude  t test URL",
+    };
     let help = vec![
-        Line::from("a add  e edit  d delete  Space enable/disable  i include  o exclude  t test URL"),
+        Line::from(mode_help),
         Line::from(format!("{}{}", input, test)),
         Line::from(app.project_message.clone()),
     ];
@@ -137,8 +168,108 @@ fn render_scope(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(help)
             .block(Block::default().title(" Scope Controls ").borders(Borders::ALL))
             .wrap(Wrap { trim: true }),
-        chunks[1],
+        area,
     );
+}
+
+fn render_scope_ai_assistant(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines = Vec::new();
+    match app.scope_ai_mode {
+        ScopeAiMode::Prompt => {
+            let input = if app.scope_ai_input.is_empty() {
+                "Describe scope rules, e.g. only example.com and api.example.com; exclude static assets...".to_string()
+            } else {
+                format!("{} _", app.scope_ai_input)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("AI Scope > ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw(input),
+            ]));
+            lines.push(Line::styled("The proposal will be validated and will not auto-apply.", Style::default().fg(Color::DarkGray)));
+        }
+        ScopeAiMode::ProposalPreview => match &app.scope_ai_proposal {
+            Some(ScopeRuleProposalState::Loading) => {
+                let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(app.tick_count as usize) % 10];
+                lines.push(Line::styled(format!("{spinner} AI drafting precise scope regex rules..."), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+            }
+            Some(ScopeRuleProposalState::Error(error)) => {
+                lines.push(Line::styled("AI scope proposal failed", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+                lines.push(Line::raw(error.clone()));
+            }
+            Some(ScopeRuleProposalState::Ready(proposal)) => push_scope_proposal_lines(&mut lines, proposal),
+            None => lines.push(Line::raw("No proposal available")),
+        },
+        ScopeAiMode::Editing => {}
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title(" AI Scope Assistant ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn push_scope_proposal_lines(lines: &mut Vec<Line<'static>>, proposal: &ScopeRuleProposal) {
+    lines.push(Line::from(vec![
+        Span::styled("PROPOSAL ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(if proposal.replace_existing { "replace recommended" } else { "append recommended" }),
+        Span::raw("  "),
+        confidence_span(proposal.confidence),
+    ]));
+    lines.push(Line::raw(proposal.summary.clone()));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("Rules", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+    for rule in proposal.rules.iter().take(6) {
+        let color = if rule.rule_type.eq_ignore_ascii_case("exclude") { Color::Red } else { Color::Green };
+        lines.push(Line::from(vec![
+            Span::styled(format!("[{}] ", rule.rule_type.to_ascii_uppercase()), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::raw(rule.pattern.clone()),
+        ]));
+    }
+    push_scope_test_lines(lines, proposal);
+    if !proposal.warnings.is_empty() {
+        lines.push(Line::styled("Warnings", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        for warning in proposal.warnings.iter().take(3) {
+            lines.push(Line::raw(format!("• {warning}")));
+        }
+    }
+}
+
+fn push_scope_test_lines(lines: &mut Vec<Line<'static>>, proposal: &ScopeRuleProposal) {
+    if proposal.test_cases.is_empty() {
+        return;
+    }
+    let rules = proposal
+        .rules
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| ScopeRule {
+            id: index as i64 + 1,
+            pattern: rule.pattern.clone(),
+            rule_type: if rule.rule_type.eq_ignore_ascii_case("exclude") { ScopeRuleType::Exclude } else { ScopeRuleType::Include },
+            enabled: true,
+        })
+        .collect::<Vec<_>>();
+    let engine = ScopeEngine::new(rules);
+    lines.push(Line::styled("Test Cases", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+    for test in proposal.test_cases.iter().take(5) {
+        let actual = engine.is_in_scope(&test.url);
+        let ok = actual == test.expected_in_scope;
+        lines.push(Line::from(vec![
+            Span::styled(if ok { "✓ " } else { "! " }, Style::default().fg(if ok { Color::Green } else { Color::Red })),
+            Span::raw(format!("{} -> {}", test.url, if actual { "IN" } else { "OUT" })),
+        ]));
+    }
+}
+
+fn confidence_span(confidence: Option<f32>) -> Span<'static> {
+    let Some(mut value) = confidence else {
+        return Span::styled("confidence: n/a", Style::default().fg(Color::DarkGray));
+    };
+    if value > 1.0 {
+        value /= 100.0;
+    }
+    Span::styled(format!("confidence: {:.0}%", value.clamp(0.0, 1.0) * 100.0), Style::default().fg(Color::Green))
 }
 
 fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
@@ -205,9 +336,28 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         format!(" scope: {selected_flow_scope} ")
     };
 
+    let tab_hint = if app.current_tab == Tab::Proxy {
+        " e explain flow  r AI/raw  "
+    } else if app.current_tab == Tab::Scanner {
+        " Ctrl+K AI rule  t triage  "
+    } else if app.current_tab == Tab::Repeater {
+        " Ctrl+K AI builder  "
+    } else if app.current_tab == Tab::Intruder {
+        " Ctrl+K payloads  Ctrl+P plan  "
+    } else if app.current_tab == Tab::Scope {
+        " Ctrl+K AI scope  "
+    } else if app.current_tab == Tab::Decoder {
+        " Ctrl+K AI decode  "
+    } else if app.current_tab == Tab::Comparer {
+        " Ctrl+K AI summary  "
+    } else {
+        ""
+    };
+
     let status = Line::from(vec![
         Span::styled(" ←/→ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
         Span::raw(" switch tabs  "),
+        Span::styled(tab_hint, Style::default().fg(Color::Black).bg(Color::Cyan)),
         Span::styled(" Ctrl+C ", Style::default().fg(Color::Black).bg(Color::Red)),
         Span::raw(" quit  "),
         Span::styled(" s/x ", Style::default().fg(Color::Black).bg(Color::Yellow)),
