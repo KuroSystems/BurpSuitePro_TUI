@@ -245,6 +245,11 @@ pub struct App {
     pub ai_panel: AiPanelState,
     pub flow_ai_explanations: HashMap<u64, FlowExplanationState>,
     pub finding_triage: HashMap<i64, FindingTriageState>,
+    pub ollama_models: Vec<String>,
+    pub ai_model_presets: Vec<String>,
+    pub selected_ai_model: usize,
+    pub ollama_status: String,
+    pub ollama_auto_refreshed: bool,
     next_repeater_id: usize,
     repeater_tx: mpsc::Sender<RepeaterEvent>,
     intruder_tx: mpsc::Sender<IntruderEvent>,
@@ -378,6 +383,11 @@ impl App {
             ai_panel: AiPanelState::default(),
             flow_ai_explanations: HashMap::new(),
             finding_triage: HashMap::new(),
+            ollama_models: Vec::new(),
+            ai_model_presets: configured_ai_model_presets(),
+            selected_ai_model: 0,
+            ollama_status: "auto-refreshing local Ollama models...".to_string(),
+            ollama_auto_refreshed: false,
             next_repeater_id,
             repeater_tx,
             intruder_tx,
@@ -426,6 +436,10 @@ impl App {
 
     fn tick(&mut self) {
         self.tick_count = self.tick_count.saturating_add(1);
+        if !self.ollama_auto_refreshed {
+            self.ollama_auto_refreshed = true;
+            self.refresh_ollama_models();
+        }
         if self
             .proxy_task
             .as_ref()
@@ -689,6 +703,20 @@ impl App {
                     self.project_message = format!("AI passive rule generator failed: {error}");
                 }
             },
+            AiEvent::OllamaModelsComplete { result } => match result {
+                Ok(models) => {
+                    self.ollama_models = models;
+                    self.refresh_ai_model_selection();
+                    self.ollama_status = if self.ollama_models.is_empty() {
+                        "Ollama reachable, but no downloaded models found".to_string()
+                    } else {
+                        format!("found {} local Ollama models", self.ollama_models.len())
+                    };
+                }
+                Err(error) => {
+                    self.ollama_status = format!("Ollama refresh failed: {error}");
+                }
+            },
         }
     }
 
@@ -706,6 +734,10 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        if self.current_tab == Tab::Settings && self.handle_settings_key(key) {
             return;
         }
 
@@ -772,6 +804,95 @@ impl App {
             (KeyCode::Char('/'), _) if self.current_tab == Tab::Proxy => self.search_mode = true,
             _ => {}
         }
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                self.save_project_as_env();
+                true
+            }
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+                self.open_project_from_env();
+                true
+            }
+            (KeyCode::Char('s'), _) | (KeyCode::F(5), _) => {
+                self.start_proxy();
+                true
+            }
+            (KeyCode::Char('x'), _) | (KeyCode::F(7), _) => {
+                self.stop_proxy();
+                true
+            }
+            (KeyCode::Char('o'), _) | (KeyCode::Char('r'), _) => {
+                self.refresh_ollama_models();
+                true
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.select_next_ai_model();
+                true
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) => {
+                self.select_previous_ai_model();
+                true
+            }
+            (KeyCode::Enter, _) => {
+                self.apply_selected_ai_model();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn ai_model_options(&self) -> Vec<String> {
+        let mut models = Vec::new();
+        for model in self.ollama_models.iter().chain(self.ai_model_presets.iter()) {
+            if !model.trim().is_empty() && !models.iter().any(|existing: &String| existing == model) {
+                models.push(model.clone());
+            }
+        }
+        if !models.iter().any(|model| model == &self.ai_panel.settings.model) {
+            models.insert(0, self.ai_panel.settings.model.clone());
+        }
+        models
+    }
+
+    fn refresh_ai_model_selection(&mut self) {
+        let models = self.ai_model_options();
+        self.selected_ai_model = models
+            .iter()
+            .position(|model| model == &self.ai_panel.settings.model)
+            .unwrap_or(0);
+    }
+
+    fn select_next_ai_model(&mut self) {
+        let count = self.ai_model_options().len().max(1);
+        self.selected_ai_model = (self.selected_ai_model + 1).min(count.saturating_sub(1));
+    }
+
+    fn select_previous_ai_model(&mut self) {
+        self.selected_ai_model = self.selected_ai_model.saturating_sub(1);
+    }
+
+    fn apply_selected_ai_model(&mut self) {
+        let models = self.ai_model_options();
+        let Some(model) = models.get(self.selected_ai_model.min(models.len().saturating_sub(1))).cloned() else {
+            self.project_message = "No AI model selected".to_string();
+            return;
+        };
+        self.ai_panel.settings.model = model.clone();
+        self.ai_panel.status = format!("model set to {model}");
+        self.project_message = format!("AI model set to {model}");
+    }
+
+    fn refresh_ollama_models(&mut self) {
+        self.ollama_status = format!("refreshing {}", self.ai_panel.settings.ollama_url);
+        let settings = self.ai_panel.settings.clone();
+        let tx = self.ai_tx.clone();
+        tokio::spawn(async move {
+            let result = fetch_ollama_models(settings).await;
+            let _ = tx.send(AiEvent::OllamaModelsComplete { result }).await;
+        });
     }
 
     fn handle_proxy_key(&mut self, key: KeyEvent) -> bool {
@@ -3049,6 +3170,55 @@ impl App {
         self.stop_proxy();
         self.should_quit = true;
     }
+}
+
+fn configured_ai_model_presets() -> Vec<String> {
+    let mut models = Vec::new();
+    for var in ["PROXIMA_AI_MODEL_PRESETS", "PROXIMA_CLOUD_AI_MODELS", "PROXIMA_AI_MODELS"] {
+        if let Ok(value) = std::env::var(var) {
+            for model in value.split(',').map(str::trim).filter(|model| !model.is_empty()) {
+                if !models.iter().any(|existing: &String| existing == model) {
+                    models.push(model.to_string());
+                }
+            }
+        }
+    }
+    if let Ok(model) = std::env::var("PROXIMA_OLLAMA_MODEL") {
+        if !model.trim().is_empty() && !models.iter().any(|existing| existing == &model) {
+            models.push(model);
+        }
+    }
+    for model in ["qwen2.5-coder:7b", "llama3.1:8b", "mistral:7b", "gemma2:9b"] {
+        if !models.iter().any(|existing| existing == model) {
+            models.push(model.to_string());
+        }
+    }
+    models
+}
+
+async fn fetch_ollama_models(settings: crate::models::ai::AiSettings) -> Result<Vec<String>, String> {
+    let url = format!("{}/api/tags", settings.ollama_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("ollama returned {status}: {body}"));
+    }
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let mut models = value
+        .get("models")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model.get("name").and_then(|name| name.as_str()).map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    Ok(models)
 }
 
 async fn ask_ollama(

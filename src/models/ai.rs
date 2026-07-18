@@ -141,6 +141,9 @@ pub enum AiEvent {
     PassiveRuleDraftComplete {
         result: Result<PassiveRuleDraft, String>,
     },
+    OllamaModelsComplete {
+        result: Result<Vec<String>, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

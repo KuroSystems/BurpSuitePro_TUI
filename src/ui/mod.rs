@@ -273,28 +273,117 @@ fn confidence_span(confidence: Option<f32>) -> Span<'static> {
 }
 
 fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
-    let listen_line = format!("Listen address: {}", app.proxy_config.listen_addr);
-    let status_line = format!("Proxy status: {}", app.proxy_status.label());
-    let ca_line = format!("CA certificate: {}", app.proxy_config.ca_cert_path.display());
-    let key_line = format!("CA private key: {}", app.proxy_config.ca_key_path.display());
-    render_placeholder(
-        frame,
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+        .split(area);
+    render_proxy_settings(frame, app, columns[0]);
+    render_ai_settings(frame, app, columns[1]);
+}
+
+fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let status_color = match app.proxy_status {
+        crate::app::ProxyStatus::Running => Color::Green,
+        crate::app::ProxyStatus::Failed => Color::Red,
+        crate::app::ProxyStatus::Stopped => Color::Yellow,
+    };
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" Status ", Style::default().fg(Color::Black).bg(status_color).add_modifier(Modifier::BOLD)),
+            Span::raw(format!(" {}", app.proxy_status.label())),
+        ]),
+        Line::raw(""),
+        Line::from(vec![Span::styled("Listen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.proxy_config.listen_addr))]),
+        Line::from(vec![Span::styled("CA cert", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.proxy_config.ca_cert_path.display()))]),
+        Line::from(vec![Span::styled("CA key ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.proxy_config.ca_key_path.display()))]),
+        Line::raw(""),
+        Line::styled(app.proxy_message.clone(), Style::default().fg(status_color)),
+        Line::styled(app.project_message.clone(), Style::default().fg(Color::DarkGray)),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(" s/F5 ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" start proxy  "),
+            Span::styled(" x/F7 ", Style::default().fg(Color::Black).bg(Color::Red)),
+            Span::raw(" stop proxy"),
+        ]),
+        Line::from(vec![
+            Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" save project  "),
+            Span::styled(" Ctrl+O ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" open project"),
+        ]),
+        Line::raw(""),
+        Line::styled("Tip: import the CA certificate into browser/OS trust store for HTTPS interception.", Style::default().fg(Color::DarkGray)),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title(" Proxy Control Center ").borders(Borders::ALL).border_style(Style::default().fg(status_color)))
+            .wrap(Wrap { trim: true }),
         area,
-        "Settings",
-        &[
-            "Proxy controls:",
-            "  s - start proxy",
-            "  x - stop proxy",
-            listen_line.as_str(),
-            status_line.as_str(),
-            app.proxy_message.as_str(),
-            app.project_message.as_str(),
-            "  Ctrl+S - save project (PROXIMA_SAVE_AS optional)",
-            "  Ctrl+O - open project (PROXIMA_OPEN_PROJECT/PROXIMA_PROJECT)",
-            ca_line.as_str(),
-            key_line.as_str(),
-            "Install/import the CA certificate into your browser or OS trust store for HTTPS interception.",
-        ],
+    );
+}
+
+fn render_ai_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(8), Constraint::Min(0), Constraint::Length(5)])
+        .split(area);
+    let header = vec![
+        Line::from(vec![Span::styled("Ollama URL", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.ai_panel.settings.ollama_url))]),
+        Line::from(vec![Span::styled("Active model", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.ai_panel.settings.model))]),
+        Line::from(vec![Span::styled("Ollama", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.ollama_status))]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(" o/r ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" refresh models  "),
+            Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" select  "),
+            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" apply"),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(header)
+            .block(Block::default().title(" AI Connection ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        rows[0],
+    );
+
+    let models = app.ai_model_options();
+    let model_lines = if models.is_empty() {
+        vec![Line::styled("No model options. Start Ollama and press o.", Style::default().fg(Color::Yellow))]
+    } else {
+        models
+            .iter()
+            .enumerate()
+            .map(|(index, model)| {
+                let selected = index == app.selected_ai_model.min(models.len().saturating_sub(1));
+                let active = model == &app.ai_panel.settings.model;
+                Line::from(vec![
+                    Span::styled(if selected { "▶ " } else { "  " }, Style::default().fg(Color::Cyan)),
+                    Span::styled(model.clone(), Style::default().fg(if active { Color::Green } else { Color::Gray }).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() })),
+                    Span::raw(if active { "  active" } else { "" }),
+                ])
+            })
+            .collect::<Vec<_>>()
+    };
+    frame.render_widget(
+        Paragraph::new(model_lines)
+            .block(Block::default().title(" Local Ollama / Configured Model Options ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        rows[1],
+    );
+
+    let footer = vec![
+        Line::raw("Local models are loaded from Ollama /api/tags."),
+        Line::raw("Cloud/free model names can be listed via PROXIMA_AI_MODEL_PRESETS or PROXIMA_CLOUD_AI_MODELS."),
+        Line::styled("Note: AI calls currently use the configured Ollama-compatible /api/chat endpoint.", Style::default().fg(Color::DarkGray)),
+    ];
+    frame.render_widget(
+        Paragraph::new(footer)
+            .block(Block::default().title(" Model Discovery Notes ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        rows[2],
     );
 }
 
