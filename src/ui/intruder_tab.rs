@@ -75,6 +75,10 @@ fn render_request_editor(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_config(frame: &mut Frame, app: &App, area: Rect) {
+    if matches!(app.intruder_ai_mode, IntruderAiMode::PayloadPrompt | IntruderAiMode::PlannerPrompt) {
+        render_ai_prompt(frame, app, area);
+        return;
+    }
     if app.intruder_ai_mode == IntruderAiMode::PayloadSuggestionPreview {
         render_ai_payload_lab(frame, app, area);
         return;
@@ -346,9 +350,9 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let controls = Line::from(vec![
-        Span::styled(" Ctrl+K ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+        Span::styled(" Ctrl+K/F2 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
         Span::raw(" AI payloads  "),
-        Span::styled(" Ctrl+P ", Style::default().fg(Color::Black).bg(Color::Magenta)),
+        Span::styled(" Ctrl+P/F4 ", Style::default().fg(Color::Black).bg(Color::Magenta)),
         Span::raw(" AI plan  "),
         Span::styled(" F5 ", Style::default().fg(Color::Black).bg(Color::Green)),
         Span::raw(" start/resume  "),

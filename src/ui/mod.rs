@@ -432,7 +432,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.current_tab == Tab::Repeater {
         " Ctrl+K AI builder  "
     } else if app.current_tab == Tab::Intruder {
-        " Ctrl+K payloads  Ctrl+P plan  "
+        " Ctrl+K/F2 payloads  Ctrl+P/F4 plan  "
     } else if app.current_tab == Tab::Scope {
         " Ctrl+K AI scope  "
     } else if app.current_tab == Tab::Decoder {

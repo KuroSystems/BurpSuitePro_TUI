@@ -1079,7 +1079,7 @@ impl App {
 
     fn handle_repeater_ai_prompt_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Esc, _) => {
                 self.repeater_ai_input.clear();
                 self.repeater_ai_mode = RepeaterAiMode::Editing;
@@ -1103,7 +1103,7 @@ impl App {
 
     fn handle_repeater_ai_draft_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.open_repeater_ai_builder();
                 true
@@ -1425,7 +1425,7 @@ impl App {
 
     fn handle_scanner_rule_prompt_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Esc, _) => {
                 self.scanner_ai_input.clear();
                 self.scanner_ai_mode = ScannerAiMode::None;
@@ -1449,7 +1449,7 @@ impl App {
 
     fn handle_scanner_rule_preview_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.open_passive_rule_generator();
                 true
@@ -1703,7 +1703,7 @@ impl App {
 
     fn handle_decoder_ai_suggestion_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.suggest_decoder_chain();
                 true
@@ -1889,11 +1889,23 @@ impl App {
         }
 
         match (key.code, key.modifiers) {
-            (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('k') | KeyCode::Char('K'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.open_intruder_ai_payload_generator();
                 true
             }
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('p') | KeyCode::Char('P'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.open_intruder_ai_attack_planner();
+                true
+            }
+            (KeyCode::F(2), _) => {
+                self.open_intruder_ai_payload_generator();
+                true
+            }
+            (KeyCode::F(4), _) => {
                 self.open_intruder_ai_attack_planner();
                 true
             }
@@ -1974,7 +1986,7 @@ impl App {
 
     fn handle_intruder_ai_prompt_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Esc, _) => {
                 self.intruder_ai_input.clear();
                 self.intruder_ai_mode = IntruderAiMode::Editing;
@@ -2002,12 +2014,24 @@ impl App {
 
     fn handle_intruder_ai_suggestion_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
-            (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('k') | KeyCode::Char('K'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.open_intruder_ai_payload_generator();
                 true
             }
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('p') | KeyCode::Char('P'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.open_intruder_ai_attack_planner();
+                true
+            }
+            (KeyCode::F(2), _) => {
+                self.open_intruder_ai_payload_generator();
+                true
+            }
+            (KeyCode::F(4), _) => {
                 self.open_intruder_ai_attack_planner();
                 true
             }
@@ -2033,13 +2057,25 @@ impl App {
 
     fn handle_intruder_ai_plan_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('p') | KeyCode::Char('P'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.open_intruder_ai_attack_planner();
                 true
             }
-            (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('k') | KeyCode::Char('K'), modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.open_intruder_ai_payload_generator();
+                true
+            }
+            (KeyCode::F(2), _) => {
+                self.open_intruder_ai_payload_generator();
+                true
+            }
+            (KeyCode::F(4), _) => {
+                self.open_intruder_ai_attack_planner();
                 true
             }
             (KeyCode::Char('a'), KeyModifiers::NONE) => {
@@ -2345,7 +2381,7 @@ impl App {
 
     fn handle_scope_ai_prompt_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Esc, _) => {
                 self.scope_ai_input.clear();
                 self.scope_ai_mode = ScopeAiMode::Editing;
@@ -2369,7 +2405,7 @@ impl App {
 
     fn handle_scope_ai_proposal_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.open_scope_ai_assistant();
                 true
