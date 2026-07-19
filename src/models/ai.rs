@@ -135,6 +135,9 @@ pub enum AiEvent {
     DecoderChainComplete {
         result: Result<DecoderChainSuggestion, String>,
     },
+    DecoderAgentComplete {
+        result: Result<DecoderAgentResult, String>,
+    },
     ComparerSummaryComplete {
         result: Result<ComparerSummary, String>,
     },
@@ -446,6 +449,51 @@ pub struct DecoderTransformSuggestion {
 pub enum DecoderChainSuggestionState {
     Loading,
     Ready(DecoderChainSuggestion),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DecoderAgentResult {
+    #[serde(default)]
+    pub detected_type: String,
+    #[serde(default)]
+    pub decoded_output: String,
+    #[serde(default)]
+    pub workflow_summary: String,
+    #[serde(default)]
+    pub steps: Vec<DecoderAgentStep>,
+    #[serde(default)]
+    pub artifacts: Vec<DecoderArtifact>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub raw_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DecoderAgentStep {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub result: String,
+    #[serde(default)]
+    pub reasoning: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DecoderArtifact {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum DecoderAgentState {
+    Loading,
+    Ready(DecoderAgentResult),
     Error(String),
 }
 

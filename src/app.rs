@@ -11,7 +11,8 @@ use crate::{
     models::{
         ai::{
             AiContext, AiEvent, AiMessage, AiPanelState, ComparerSummary, ComparerSummaryState,
-            DecoderChainSuggestion, DecoderChainSuggestionState, FindingTriage, FindingTriageState, FlowExplanation,
+            DecoderAgentResult, DecoderAgentState, DecoderChainSuggestion, DecoderChainSuggestionState,
+            FindingTriage, FindingTriageState, FlowExplanation,
             FlowExplanationState, IntruderAttackPlan, IntruderAttackPlanState,
             IntruderPayloadSuggestion, IntruderPayloadSuggestionState, IntruderPlanPayloadSet,
             OllamaChatRequest, OllamaChatResponse, OllamaMessage, OllamaOptions, PassiveRuleDraft,
@@ -19,7 +20,7 @@ use crate::{
             ScopeRuleProposalState, QUICK_PROMPTS,
         },
         comparer::CompareMode,
-        decoder::DecoderTransform,
+        decoder::{apply_chain, DecoderTransform},
         flow::HttpFlow,
         intruder::{parse_positions, AttackConfig, AttackType, IntruderEngine, IntruderEvent, IntruderResult, PayloadSet},
         repeater::{HttpResponse, RepeaterTab, SendHistoryEntry},
@@ -132,6 +133,7 @@ pub enum ScopeAiMode {
 pub enum DecoderAiMode {
     Editing,
     SuggestionPreview,
+    AgentPreview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +222,7 @@ pub struct App {
     pub decoder_insert_index: usize,
     pub decoder_ai_mode: DecoderAiMode,
     pub decoder_ai_suggestion: Option<DecoderChainSuggestionState>,
+    pub decoder_agent_result: Option<DecoderAgentState>,
     pub comparer_left: String,
     pub comparer_right: String,
     pub comparer_mode: CompareMode,
@@ -359,6 +362,7 @@ impl App {
             decoder_insert_index: 0,
             decoder_ai_mode: DecoderAiMode::Editing,
             decoder_ai_suggestion: None,
+            decoder_agent_result: None,
             comparer_left: String::new(),
             comparer_right: String::new(),
             comparer_mode: CompareMode::Line,
@@ -675,6 +679,18 @@ impl App {
                     self.decoder_ai_suggestion = Some(DecoderChainSuggestionState::Error(error.clone()));
                     self.decoder_ai_mode = DecoderAiMode::SuggestionPreview;
                     self.project_message = format!("AI decoder assistant failed: {error}");
+                }
+            },
+            AiEvent::DecoderAgentComplete { result } => match result {
+                Ok(result) => {
+                    self.decoder_agent_result = Some(DecoderAgentState::Ready(result));
+                    self.decoder_ai_mode = DecoderAiMode::AgentPreview;
+                    self.project_message = "AI decoder agent completed workflow".to_string();
+                }
+                Err(error) => {
+                    self.decoder_agent_result = Some(DecoderAgentState::Error(error.clone()));
+                    self.decoder_ai_mode = DecoderAiMode::AgentPreview;
+                    self.project_message = format!("AI decoder agent failed: {error}");
                 }
             },
             AiEvent::ComparerSummaryComplete { result } => match result {
@@ -1633,10 +1649,17 @@ impl App {
         if self.decoder_ai_mode == DecoderAiMode::SuggestionPreview {
             return self.handle_decoder_ai_suggestion_key(key);
         }
+        if self.decoder_ai_mode == DecoderAiMode::AgentPreview {
+            return self.handle_decoder_agent_key(key);
+        }
 
         match (key.code, key.modifiers) {
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
                 self.suggest_decoder_chain();
+                true
+            }
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) | (KeyCode::F(2), _) => {
+                self.run_decoder_agent();
                 true
             }
             (KeyCode::Char(char @ '1'..='9'), _) => {
@@ -1708,6 +1731,10 @@ impl App {
                 self.suggest_decoder_chain();
                 true
             }
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) | (KeyCode::F(2), _) => {
+                self.run_decoder_agent();
+                true
+            }
             (KeyCode::Char('a'), KeyModifiers::NONE) => {
                 self.apply_decoder_ai_chain(true);
                 true
@@ -1718,6 +1745,30 @@ impl App {
             }
             (KeyCode::Char('d'), KeyModifiers::NONE) | (KeyCode::Esc, _) => {
                 self.discard_decoder_ai_suggestion();
+                true
+            }
+            (KeyCode::Right | KeyCode::Tab, _) | (KeyCode::Left | KeyCode::BackTab, _) => false,
+            _ => true,
+        }
+    }
+
+    fn handle_decoder_agent_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('c') | KeyCode::Char('C'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
+            (KeyCode::Char('g'), KeyModifiers::CONTROL) | (KeyCode::F(2), _) => {
+                self.run_decoder_agent();
+                true
+            }
+            (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+                self.suggest_decoder_chain();
+                true
+            }
+            (KeyCode::Char('a'), KeyModifiers::NONE) => {
+                self.apply_decoder_agent_output();
+                true
+            }
+            (KeyCode::Char('d'), KeyModifiers::NONE) | (KeyCode::Esc, _) => {
+                self.discard_decoder_agent_result();
                 true
             }
             (KeyCode::Right | KeyCode::Tab, _) | (KeyCode::Left | KeyCode::BackTab, _) => false,
@@ -1783,6 +1834,51 @@ impl App {
         self.decoder_ai_suggestion = None;
         self.decoder_ai_mode = DecoderAiMode::Editing;
         self.project_message = "Discarded AI decoder suggestion".to_string();
+    }
+
+    fn run_decoder_agent(&mut self) {
+        if self.decoder_input.trim().is_empty() {
+            self.project_message = "Decoder input is empty".to_string();
+            return;
+        }
+        self.decoder_ai_mode = DecoderAiMode::AgentPreview;
+        self.decoder_agent_result = Some(DecoderAgentState::Loading);
+        self.project_message = format!("Asking {} to run agentic decoder workflow", self.ai_panel.settings.model);
+
+        let settings = self.ai_panel.settings.clone();
+        let input = self.decoder_input.clone();
+        let current_chain_output = apply_chain(&self.decoder_input, &self.decoder_chain)
+            .unwrap_or_else(|error| format!("current chain error: {error}"));
+        let heuristics = decoder_heuristic_summary(&self.decoder_input);
+        let local_probes = decoder_local_probe_summary(&self.decoder_input);
+        let tx = self.ai_tx.clone();
+        tokio::spawn(async move {
+            let result = run_decoder_agent_with_ollama(settings, input, current_chain_output, heuristics, local_probes).await;
+            let _ = tx.send(AiEvent::DecoderAgentComplete { result }).await;
+        });
+    }
+
+    fn apply_decoder_agent_output(&mut self) {
+        let Some(DecoderAgentState::Ready(result)) = self.decoder_agent_result.clone() else {
+            self.project_message = "No ready AI decoder agent output to apply".to_string();
+            return;
+        };
+        if result.decoded_output.trim().is_empty() {
+            self.project_message = "AI decoder agent returned empty output".to_string();
+            return;
+        }
+        self.decoder_input = result.decoded_output;
+        self.decoder_chain.clear();
+        self.selected_decoder_transform = 0;
+        self.decoder_agent_result = None;
+        self.decoder_ai_mode = DecoderAiMode::Editing;
+        self.project_message = "Moved AI decoded output into Decoder input".to_string();
+    }
+
+    fn discard_decoder_agent_result(&mut self) {
+        self.decoder_agent_result = None;
+        self.decoder_ai_mode = DecoderAiMode::Editing;
+        self.project_message = "Discarded AI decoder agent result".to_string();
     }
 
     fn handle_comparer_key(&mut self, key: KeyEvent) -> bool {
@@ -4022,6 +4118,60 @@ async fn summarize_comparer_with_ollama(
     Ok(normalize_comparer_summary(parse_comparer_summary(&content)))
 }
 
+async fn run_decoder_agent_with_ollama(
+    settings: crate::models::ai::AiSettings,
+    input: String,
+    current_chain_output: String,
+    heuristics: String,
+    local_probes: String,
+) -> Result<DecoderAgentResult, String> {
+    let sample = input.chars().take(settings.max_context_chars.min(10_000)).collect::<String>();
+    let current_output = current_chain_output.chars().take(8_000).collect::<String>();
+    let messages = vec![
+        OllamaMessage {
+            role: "system".to_string(),
+            content: ai_decoder_agent_system_prompt(),
+        },
+        OllamaMessage {
+            role: "user".to_string(),
+            content: format!(
+                "Input sample:\n{}\n\nCurrent chain output:\n{}\n\nLocal heuristics:\n{}\n\nLocal decode probes tried by the app:\n{}",
+                sample, current_output, heuristics, local_probes
+            ),
+        },
+    ];
+
+    let request_body = OllamaChatRequest {
+        model: settings.model,
+        stream: false,
+        messages,
+        options: OllamaOptions {
+            temperature: settings.temperature,
+        },
+    };
+    let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("ollama returned {status}: {body}"));
+    }
+    let response: OllamaChatResponse = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    let content = response
+        .message
+        .map(|message| message.content)
+        .ok_or_else(|| "ollama response did not include a message".to_string())?;
+    Ok(normalize_decoder_agent_result(parse_decoder_agent_result(&content)))
+}
+
 async fn suggest_decoder_chain_with_ollama(
     settings: crate::models::ai::AiSettings,
     input: String,
@@ -4339,6 +4489,39 @@ fn normalize_comparer_summary(mut summary: ComparerSummary) -> ComparerSummary {
     summary
 }
 
+fn parse_decoder_agent_result(content: &str) -> DecoderAgentResult {
+    if let Ok(result) = serde_json::from_str::<DecoderAgentResult>(content) {
+        return result;
+    }
+
+    if let Some(json) = extract_json_object(content) {
+        if let Ok(result) = serde_json::from_str::<DecoderAgentResult>(json) {
+            return result;
+        }
+    }
+
+    DecoderAgentResult {
+        detected_type: "Unstructured".to_string(),
+        decoded_output: content.trim().to_string(),
+        workflow_summary: "AI returned unstructured output; showing it as decoded output.".to_string(),
+        raw_text: Some(content.trim().to_string()),
+        ..DecoderAgentResult::default()
+    }
+}
+
+fn normalize_decoder_agent_result(mut result: DecoderAgentResult) -> DecoderAgentResult {
+    if result.detected_type.trim().is_empty() {
+        result.detected_type = "Unknown / agent-decoded".to_string();
+    }
+    if result.workflow_summary.trim().is_empty() {
+        result.workflow_summary = "AI agent attempted multi-step decoding using local probes and model reasoning.".to_string();
+    }
+    if result.decoded_output.trim().is_empty() {
+        result.warnings.push("No final decoded output was produced.".to_string());
+    }
+    result
+}
+
 fn parse_decoder_chain_suggestion(content: &str) -> DecoderChainSuggestion {
     if let Ok(suggestion) = serde_json::from_str::<DecoderChainSuggestion>(content) {
         return suggestion;
@@ -4516,6 +4699,37 @@ fn is_interesting_json_path(path: &str) -> bool {
     ["role", "admin", "is_admin", "user_id", "userid", "tenant", "org", "permission", "scope", "status", "email"]
         .iter()
         .any(|needle| path.contains(needle))
+}
+
+fn decoder_local_probe_summary(input: &str) -> String {
+    let probes: Vec<(&str, Vec<DecoderTransform>)> = vec![
+        ("URL Decode", vec![DecoderTransform::UrlDecode]),
+        ("Base64 Decode", vec![DecoderTransform::Base64Decode]),
+        ("Hex Decode", vec![DecoderTransform::HexDecode]),
+        ("HTML Decode", vec![DecoderTransform::HtmlDecode]),
+        ("JWT Decode", vec![DecoderTransform::JwtDecode]),
+        ("JSON Pretty Print", vec![DecoderTransform::JsonPrettyPrint]),
+        ("URL -> Base64", vec![DecoderTransform::UrlDecode, DecoderTransform::Base64Decode]),
+        ("Base64 -> URL", vec![DecoderTransform::Base64Decode, DecoderTransform::UrlDecode]),
+        ("Base64 -> JSON", vec![DecoderTransform::Base64Decode, DecoderTransform::JsonPrettyPrint]),
+        ("URL -> JSON", vec![DecoderTransform::UrlDecode, DecoderTransform::JsonPrettyPrint]),
+        ("Hex -> JSON", vec![DecoderTransform::HexDecode, DecoderTransform::JsonPrettyPrint]),
+        ("HTML -> HTML", vec![DecoderTransform::HtmlDecode, DecoderTransform::HtmlDecode]),
+        ("URL -> JWT", vec![DecoderTransform::UrlDecode, DecoderTransform::JwtDecode]),
+    ];
+    let mut lines = Vec::new();
+    for (name, chain) in probes {
+        match apply_chain(input, &chain) {
+            Ok(output) => {
+                let preview = output.replace('\n', " ").chars().take(240).collect::<String>();
+                lines.push(format!("{name}: ok => {preview}"));
+            }
+            Err(error) => {
+                lines.push(format!("{name}: error => {error}"));
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 fn decoder_heuristic_summary(input: &str) -> String {
@@ -4997,6 +5211,31 @@ Required JSON shape:
   "security_interpretation": "What this may mean for IDOR/auth bypass testing, with uncertainty",
   "suggested_next_steps": ["Replay both requests with only one variable changed"],
   "risk_hint": "none|likely_noise|possible_idor|possible_auth_bypass|possible_privilege_change|server_error_signal|content_change|header_security_change",
+  "confidence": 0.0
+}
+Use confidence as a number between 0.0 and 1.0."#
+        .to_string()
+}
+
+fn ai_decoder_agent_system_prompt() -> String {
+    r#"You are Proxima Agentic Decoder, a local AI workflow that attempts to decode unknown blobs beyond the fixed transform list.
+Return ONLY valid JSON. Do not use markdown fences or prose outside JSON.
+Use the local heuristic signals and local probe results first. Then reason about nested encodings, JWT/JWS/JWE-like structures, JSON, URL/HTML escapes, hex, Base64/Base64URL, Unicode escapes, escaped JSON strings, common token formats, hashes, compression hints, serialized data, or cases that are not safely decodable.
+You may provide a decoded_output even when no built-in transform chain can represent it, but do not invent data. If the value appears encrypted, compressed without enough tooling, signed-only, hashed, or opaque/random, say so clearly and leave decoded_output empty or best-effort.
+Do not claim JWT signatures are verified. Do not claim secrets are valid. Keep sensitive token values in context only; summarize claims where appropriate.
+
+Required JSON shape:
+{
+  "detected_type": "JWT|Nested URL/Base64 JSON|Hex JSON|HTML entities|Unicode escaped JSON|Hash|Encrypted/Opaque|Custom",
+  "decoded_output": "Best-effort decoded final content, or empty if not decodable",
+  "workflow_summary": "Short explanation of the decode workflow",
+  "steps": [
+    {"action": "URL decode", "result": "Produced Base64-looking text", "reasoning": "Input contained %XX sequences"}
+  ],
+  "artifacts": [
+    {"name": "JWT header", "value": "{...}"}
+  ],
+  "warnings": ["JWT signature is not verified", "Looks encrypted/opaque"],
   "confidence": 0.0
 }
 Use confidence as a number between 0.0 and 1.0."#

@@ -436,7 +436,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.current_tab == Tab::Scope {
         " Ctrl+K AI scope  "
     } else if app.current_tab == Tab::Decoder {
-        " Ctrl+K AI decode  "
+        " Ctrl+K chain  Ctrl+G/F2 agent  "
     } else if app.current_tab == Tab::Comparer {
         " Ctrl+K AI summary  "
     } else {

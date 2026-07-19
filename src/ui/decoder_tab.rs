@@ -10,7 +10,7 @@ use ratatui_textarea::TextArea;
 use crate::{
     app::{App, DecoderAiMode},
     models::{
-        ai::{DecoderChainSuggestion, DecoderChainSuggestionState},
+        ai::{DecoderAgentResult, DecoderAgentState, DecoderChainSuggestion, DecoderChainSuggestionState},
         decoder::{apply_chain, DecoderTransform},
     },
 };
@@ -21,10 +21,10 @@ pub fn render_decoder_tab(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(42), Constraint::Percentage(24), Constraint::Percentage(34)])
         .split(area);
     render_input(frame, app, columns[0]);
-    if app.decoder_ai_mode == DecoderAiMode::SuggestionPreview {
-        render_ai_suggestion(frame, app, columns[1]);
-    } else {
-        render_chain(frame, app, columns[1]);
+    match app.decoder_ai_mode {
+        DecoderAiMode::SuggestionPreview => render_ai_suggestion(frame, app, columns[1]),
+        DecoderAiMode::AgentPreview => render_agent_workflow(frame, app, columns[1]),
+        DecoderAiMode::Editing => render_chain(frame, app, columns[1]),
     }
     render_output(frame, app, columns[2]);
 }
@@ -141,14 +141,84 @@ fn confidence_span(confidence: Option<f32>) -> Span<'static> {
     Span::styled(format!("confidence: {:.0}%", value.clamp(0.0, 1.0) * 100.0), Style::default().fg(Color::Green))
 }
 
+fn render_agent_workflow(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines = Vec::new();
+    match &app.decoder_agent_result {
+        Some(DecoderAgentState::Loading) => {
+            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(app.tick_count as usize) % 10];
+            lines.push(Line::styled(format!("{spinner} agentic decoder running..."), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+            lines.push(Line::styled("Trying local probes, nested chains, token structures, escapes, and AI reasoning.", Style::default().fg(Color::DarkGray)));
+        }
+        Some(DecoderAgentState::Error(error)) => {
+            lines.push(Line::styled("AI decoder agent failed", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+            lines.push(Line::raw(error.clone()));
+            lines.push(Line::styled("Ctrl+G/F2 retry  d/Esc discard", Style::default().fg(Color::DarkGray)));
+        }
+        Some(DecoderAgentState::Ready(result)) => push_agent_result_lines(&mut lines, result),
+        None => lines.push(Line::raw("No agent result available")),
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title(" AI Agentic Decode Workflow  a move output  d discard ").borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn push_agent_result_lines(lines: &mut Vec<Line<'static>>, result: &DecoderAgentResult) {
+    let detected = if result.detected_type.trim().is_empty() { "Agent Decode" } else { result.detected_type.as_str() };
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {detected} "), Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        confidence_span(result.confidence),
+    ]));
+    lines.push(Line::raw(result.workflow_summary.clone()));
+    lines.push(Line::raw(""));
+    if !result.steps.is_empty() {
+        lines.push(Line::styled("Workflow Steps", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+        for (index, step) in result.steps.iter().take(6).enumerate() {
+            lines.push(Line::raw(format!("{}. {} -> {}", index + 1, step.action, step.result)));
+        }
+    }
+    if !result.artifacts.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Artifacts", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        for artifact in result.artifacts.iter().take(4) {
+            lines.push(Line::raw(format!("• {}: {}", artifact.name, artifact.value.chars().take(120).collect::<String>())));
+        }
+    }
+    if !result.warnings.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Warnings", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        for warning in result.warnings.iter().take(5) {
+            lines.push(Line::raw(format!("• {warning}")));
+        }
+    }
+}
+
 fn render_output(frame: &mut Frame, app: &App, area: Rect) {
-    let output = apply_chain(&app.decoder_input, &app.decoder_chain)
-        .unwrap_or_else(|error| format!("Transform error: {error}"));
+    let (title, output) = if app.decoder_ai_mode == DecoderAiMode::AgentPreview {
+        match &app.decoder_agent_result {
+            Some(DecoderAgentState::Ready(result)) if !result.decoded_output.trim().is_empty() => {
+                (" AI Agent Decoded Output ", result.decoded_output.clone())
+            }
+            Some(DecoderAgentState::Ready(_)) => (" AI Agent Decoded Output ", "No final decoded output produced.".to_string()),
+            Some(DecoderAgentState::Loading) => (" AI Agent Decoded Output ", "Agent is still working...".to_string()),
+            Some(DecoderAgentState::Error(error)) => (" AI Agent Error ", error.clone()),
+            None => (" AI Agent Decoded Output ", "No agent output.".to_string()),
+        }
+    } else {
+        (
+            " Output Preview ",
+            apply_chain(&app.decoder_input, &app.decoder_chain)
+                .unwrap_or_else(|error| format!("Transform error: {error}")),
+        )
+    };
     let help = Line::from(vec![
         Span::styled("1-0", Style::default().fg(Color::Black).bg(Color::Cyan)),
         Span::raw(" add  "),
         Span::styled("Del", Style::default().fg(Color::Black).bg(Color::Red)),
-        Span::raw(" remove  Alt+↑/↓ reorder  Ctrl+K AI suggest  Ctrl+D from Proxy sends body here"),
+        Span::raw(" remove  Alt+↑/↓ reorder  Ctrl+K suggest  Ctrl+G/F2 agent  Ctrl+D from Proxy sends body here"),
     ]);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -156,7 +226,7 @@ fn render_output(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
     frame.render_widget(
         Paragraph::new(output)
-            .block(Block::default().title(" Output Preview ").borders(Borders::ALL))
+            .block(Block::default().title(title).borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         chunks[0],
     );
