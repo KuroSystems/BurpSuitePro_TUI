@@ -293,7 +293,14 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(format!(" {}", app.proxy_status.label())),
         ]),
         Line::raw(""),
-        Line::from(vec![Span::styled("Listen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.proxy_config.listen_addr))]),
+        Line::from(vec![
+            Span::styled("Listen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw(if app.settings_editing_proxy_addr { "  " } else { "  " }),
+            Span::styled(
+                if app.settings_editing_proxy_addr { format!("{} _", app.proxy_addr_input) } else { app.proxy_config.listen_addr.to_string() },
+                Style::default().fg(if app.settings_editing_proxy_addr { Color::Yellow } else { Color::Gray }).add_modifier(if app.settings_editing_proxy_addr { Modifier::BOLD } else { Modifier::empty() }),
+            ),
+        ]),
         Line::from(vec![Span::styled("CA cert", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.proxy_config.ca_cert_path.display()))]),
         Line::from(vec![Span::styled("CA key ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw(format!("  {}", app.proxy_config.ca_key_path.display()))]),
         Line::raw(""),
@@ -302,9 +309,17 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
         Line::raw(""),
         Line::from(vec![
             Span::styled(" s/F5 ", Style::default().fg(Color::Black).bg(Color::Green)),
-            Span::raw(" start proxy  "),
+            Span::raw(" start  "),
             Span::styled(" x/F7 ", Style::default().fg(Color::Black).bg(Color::Red)),
-            Span::raw(" stop proxy"),
+            Span::raw(" stop  "),
+            Span::styled(" p ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" edit port"),
+        ]),
+        Line::from(vec![
+            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" apply edited port  "),
+            Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::Red)),
+            Span::raw(" cancel edit"),
         ]),
         Line::from(vec![
             Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Yellow)),

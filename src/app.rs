@@ -171,6 +171,8 @@ pub struct App {
     pub proxy_config: ProxyConfig,
     pub proxy_status: ProxyStatus,
     pub proxy_message: String,
+    pub settings_editing_proxy_addr: bool,
+    pub proxy_addr_input: String,
     pub flow_store: FlowStore,
     pub selected_flow: Option<usize>,
     pub request_scroll: u16,
@@ -312,6 +314,8 @@ impl App {
             tick_count: 0,
             proxy_status: ProxyStatus::Stopped,
             proxy_message: format!("Proxy ready on {}", proxy_config.listen_addr),
+            settings_editing_proxy_addr: false,
+            proxy_addr_input: proxy_config.listen_addr.to_string(),
             proxy_config,
             flow_store,
             selected_flow: None,
@@ -896,11 +900,36 @@ impl App {
                 }
             }
             Tab::Scanner if self.scanner_ai_mode == ScannerAiMode::RulePrompt => Some(self.scanner_ai_input.clone()),
+            Tab::Settings if self.settings_editing_proxy_addr => Some(self.proxy_addr_input.clone()),
             _ => None,
         }
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
+        if self.settings_editing_proxy_addr {
+            match key.code {
+                KeyCode::Enter => {
+                    self.apply_proxy_listen_input();
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.settings_editing_proxy_addr = false;
+                    self.proxy_addr_input = self.proxy_config.listen_addr.to_string();
+                    self.proxy_message = "Proxy listen edit cancelled".to_string();
+                    return true;
+                }
+                KeyCode::Backspace => {
+                    self.proxy_addr_input.pop();
+                    return true;
+                }
+                KeyCode::Char(char) => {
+                    self.proxy_addr_input.push(char);
+                    return true;
+                }
+                _ => return true,
+            }
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                 self.save_project_as_env();
@@ -916,6 +945,12 @@ impl App {
             }
             (KeyCode::Char('x'), _) | (KeyCode::F(7), _) => {
                 self.stop_proxy();
+                true
+            }
+            (KeyCode::Char('p'), _) => {
+                self.settings_editing_proxy_addr = true;
+                self.proxy_addr_input = self.proxy_config.listen_addr.to_string();
+                self.proxy_message = "Editing proxy listen address. Enter to apply, Esc to cancel.".to_string();
                 true
             }
             (KeyCode::Char('o'), _) | (KeyCode::Char('r'), _) => {
@@ -935,6 +970,38 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    fn apply_proxy_listen_input(&mut self) {
+        if self.proxy_status == ProxyStatus::Running {
+            self.proxy_message = "Stop proxy before changing listen address/port".to_string();
+            return;
+        }
+        let input = self.proxy_addr_input.trim();
+        if input.is_empty() {
+            self.proxy_message = "Listen address cannot be empty".to_string();
+            return;
+        }
+        let parsed: Result<std::net::SocketAddr, String> = if input.contains(':') {
+            input.parse().map_err(|error| error.to_string())
+        } else {
+            input
+                .parse::<u16>()
+                .map(|port| std::net::SocketAddr::new(self.proxy_config.listen_addr.ip(), port))
+                .map_err(|error| error.to_string())
+        };
+        match parsed {
+            Ok(addr) => {
+                self.proxy_config.listen_addr = addr;
+                self.proxy_addr_input = addr.to_string();
+                self.settings_editing_proxy_addr = false;
+                let _ = self.database.save_setting("proxy.listen_addr", &addr.to_string());
+                self.proxy_message = format!("Proxy listen address set to {addr}. Press s/F5 to start.");
+            }
+            Err(error) => {
+                self.proxy_message = format!("Invalid listen address/port '{input}': {error}");
+            }
         }
     }
 
@@ -2782,6 +2849,11 @@ impl App {
                     self.scanner_ai_input.push_str(&text);
                 }
             }
+            Tab::Settings => {
+                if self.settings_editing_proxy_addr {
+                    self.proxy_addr_input.push_str(text.trim());
+                }
+            }
             _ => {}
         }
     }
@@ -2894,7 +2966,7 @@ impl App {
             Ok(listener) => drop(listener),
             Err(error) => {
                 self.proxy_status = ProxyStatus::Failed;
-                self.proxy_message = format!("Cannot start proxy on {listen_addr}: {error}. Try changing PROXIMA_PROXY_LISTEN or free the port.");
+                self.proxy_message = format!("Cannot start proxy on {listen_addr}: {error}. Press p in Settings to edit the port, or free the port.");
                 return;
             }
         }
