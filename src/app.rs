@@ -207,6 +207,8 @@ pub struct App {
     pub intruder_ai_suggestion: Option<IntruderPayloadSuggestionState>,
     pub intruder_ai_plan: Option<IntruderAttackPlanState>,
     pub intruder_plan_payload_sets: Vec<IntruderPlanPayloadSet>,
+    pub selected_intruder_ai_payload: usize,
+    pub intruder_ai_context_payloads: Vec<String>,
     pub intruder_concurrency: usize,
     pub intruder_rps: u32,
     pub intruder_results: Vec<IntruderResult>,
@@ -347,6 +349,8 @@ impl App {
             intruder_ai_suggestion: None,
             intruder_ai_plan: None,
             intruder_plan_payload_sets: Vec::new(),
+            selected_intruder_ai_payload: 0,
+            intruder_ai_context_payloads: Vec::new(),
             intruder_concurrency: 4,
             intruder_rps: 10,
             intruder_results,
@@ -632,6 +636,7 @@ impl App {
             AiEvent::IntruderPayloadsComplete { result } => match result {
                 Ok(suggestion) => {
                     let count = suggestion.payloads.len();
+                    self.selected_intruder_ai_payload = 0;
                     self.intruder_ai_suggestion = Some(IntruderPayloadSuggestionState::Ready(suggestion));
                     self.intruder_ai_mode = IntruderAiMode::PayloadSuggestionPreview;
                     self.project_message = format!("AI generated {count} safe Intruder payloads");
@@ -2131,6 +2136,22 @@ impl App {
                 self.open_intruder_ai_attack_planner();
                 true
             }
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.select_next_intruder_ai_payload();
+                true
+            }
+            (KeyCode::Up | KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::SHIFT) => {
+                self.select_previous_intruder_ai_payload();
+                true
+            }
+            (KeyCode::Char('u'), KeyModifiers::NONE) | (KeyCode::Enter, _) => {
+                self.use_selected_intruder_ai_payload();
+                true
+            }
+            (KeyCode::Delete, _) | (KeyCode::Char('x'), KeyModifiers::NONE) => {
+                self.delete_selected_intruder_ai_payload();
+                true
+            }
             (KeyCode::Char('a'), KeyModifiers::NONE) => {
                 self.apply_intruder_ai_payloads(false);
                 true
@@ -2259,6 +2280,7 @@ impl App {
             .lines()
             .filter(|line| !line.trim().is_empty())
             .count();
+        let context_payloads = self.intruder_ai_context_payloads.clone();
         self.intruder_ai_input.clear();
         self.intruder_ai_mode = IntruderAiMode::PlanPreview;
         self.intruder_ai_plan = Some(IntruderAttackPlanState::Loading);
@@ -2273,10 +2295,86 @@ impl App {
                 request,
                 attack_type,
                 existing_payload_count,
+                context_payloads,
             )
             .await;
             let _ = tx.send(AiEvent::IntruderAttackPlanComplete { result }).await;
         });
+    }
+
+    fn current_intruder_ai_payloads(&self) -> Option<&[String]> {
+        match &self.intruder_ai_suggestion {
+            Some(IntruderPayloadSuggestionState::Ready(suggestion)) => Some(&suggestion.payloads),
+            _ => None,
+        }
+    }
+
+    fn select_next_intruder_ai_payload(&mut self) {
+        let len = self.current_intruder_ai_payloads().map(|payloads| payloads.len()).unwrap_or(0);
+        if len > 0 {
+            self.selected_intruder_ai_payload = (self.selected_intruder_ai_payload + 1).min(len - 1);
+        }
+    }
+
+    fn select_previous_intruder_ai_payload(&mut self) {
+        self.selected_intruder_ai_payload = self.selected_intruder_ai_payload.saturating_sub(1);
+    }
+
+    fn selected_intruder_ai_payload_value(&self) -> Option<String> {
+        let payloads = self.current_intruder_ai_payloads()?;
+        payloads
+            .get(self.selected_intruder_ai_payload.min(payloads.len().saturating_sub(1)))
+            .cloned()
+    }
+
+    fn use_selected_intruder_ai_payload(&mut self) {
+        let Some(payload) = self.selected_intruder_ai_payload_value() else {
+            self.project_message = "No AI payload selected to use".to_string();
+            return;
+        };
+        if !self.intruder_ai_context_payloads.iter().any(|existing| existing == &payload) {
+            self.intruder_ai_context_payloads.push(payload.clone());
+        }
+        let mut current = self
+            .intruder_payloads_text
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        if !current.iter().any(|existing| existing == &payload) {
+            current.push(payload.clone());
+            self.intruder_payloads_text = current.join("\n");
+        }
+        self.project_message = format!("Using AI payload for future planning: {payload}");
+    }
+
+    fn delete_selected_intruder_ai_payload(&mut self) {
+        let (removed, remaining_generated_len) = {
+            let Some(IntruderPayloadSuggestionState::Ready(suggestion)) = self.intruder_ai_suggestion.as_mut() else {
+                self.project_message = "No AI payload list to delete from".to_string();
+                return;
+            };
+            if suggestion.payloads.is_empty() {
+                self.project_message = "AI payload list is already empty".to_string();
+                return;
+            }
+            let index = self.selected_intruder_ai_payload.min(suggestion.payloads.len() - 1);
+            let removed = suggestion.payloads.remove(index);
+            let remaining_generated_len = suggestion.payloads.len();
+            (removed, remaining_generated_len)
+        };
+        self.intruder_ai_context_payloads.retain(|payload| payload != &removed);
+        let remaining_payloads = self
+            .intruder_payloads_text
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty() && line != &removed)
+            .collect::<Vec<_>>();
+        self.intruder_payloads_text = remaining_payloads.join("\n");
+        self.selected_intruder_ai_payload = self
+            .selected_intruder_ai_payload
+            .min(remaining_generated_len.saturating_sub(1));
+        self.project_message = format!("Deleted AI payload: {removed}");
     }
 
     fn apply_intruder_ai_payloads(&mut self, append: bool) {
@@ -2288,6 +2386,11 @@ impl App {
         if payloads.is_empty() {
             self.project_message = "AI payload set is empty after safety filtering".to_string();
             return;
+        }
+        for payload in &payloads {
+            if !self.intruder_ai_context_payloads.iter().any(|existing| existing == payload) {
+                self.intruder_ai_context_payloads.push(payload.clone());
+            }
         }
         if append {
             let mut combined = self
@@ -3879,6 +3982,7 @@ async fn plan_intruder_attack_with_ollama(
     request: String,
     attack_type: AttackType,
     existing_payload_count: usize,
+    context_payloads: Vec<String>,
 ) -> Result<IntruderAttackPlan, String> {
     let (redacted_request, preserved_values, _) = if settings.redaction_enabled {
         redact_repeater_request_for_ai(&request)
@@ -3908,12 +4012,13 @@ async fn plan_intruder_attack_with_ollama(
         OllamaMessage {
             role: "user".to_string(),
             content: format!(
-                "User instruction:\n{}\n\nCurrent Intruder raw request:\n{}\n\nExisting positions:\n{}\n\nCurrent attack type: {}\nExisting payload count: {}\nSafety mode: destructive payloads disabled; attack must not start automatically.",
+                "User instruction:\n{}\n\nCurrent Intruder raw request:\n{}\n\nExisting positions:\n{}\n\nCurrent attack type: {}\nExisting payload count: {}\nAI-selected payload context to prefer in this plan:\n{}\n\nSafety mode: destructive payloads disabled; attack must not start automatically.",
                 instruction,
                 redacted_request.chars().take(settings.max_context_chars).collect::<String>(),
                 if position_summary.is_empty() { "no positions marked yet".to_string() } else { position_summary },
                 attack_type.label(),
-                existing_payload_count
+                existing_payload_count,
+                if context_payloads.is_empty() { "<none>".to_string() } else { context_payloads.join("\n") }
             ),
         },
     ];

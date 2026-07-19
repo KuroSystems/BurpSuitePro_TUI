@@ -181,7 +181,8 @@ fn push_ai_payload_suggestion(lines: &mut Vec<Line<'static>>, suggestion: &Intru
     }
     lines.push(confidence_line(suggestion.confidence));
     lines.push(Line::raw(""));
-    push_list(lines, "Payload Preview", &suggestion.payloads, Color::Green, 8);
+    lines.push(Line::styled("Full generated payload list is shown in the box below. Select a row and press u/Enter to use it, Del/x to delete it.", Style::default().fg(Color::DarkGray)));
+    push_list(lines, "Payload Preview", &suggestion.payloads, Color::Green, 5);
     push_list(lines, "Rationale", &suggestion.rationale, Color::Cyan, 3);
     push_list(lines, "Safety Notes", &suggestion.safety_notes, Color::Yellow, 3);
     push_list(lines, "Warnings", &suggestion.warnings, Color::Red, 3);
@@ -297,7 +298,77 @@ fn push_plan_payload_sets(lines: &mut Vec<Line<'static>>, sets: &[crate::models:
     }
 }
 
+fn render_generated_payloads(frame: &mut Frame, app: &App, area: Rect) {
+    match &app.intruder_ai_suggestion {
+        Some(IntruderPayloadSuggestionState::Loading) => {
+            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(app.tick_count as usize) % 10];
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(format!("{spinner} AI is generating payload rows..."), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Line::raw("Generated payloads will appear here in real time once the model returns."),
+                ])
+                .block(Block::default().title(" Generated AI Payloads ").borders(Borders::ALL))
+                .wrap(Wrap { trim: true }),
+                area,
+            );
+        }
+        Some(IntruderPayloadSuggestionState::Error(error)) => {
+            frame.render_widget(
+                Paragraph::new(error.clone())
+                    .block(Block::default().title(" Generated AI Payloads - Error ").borders(Borders::ALL))
+                    .wrap(Wrap { trim: true }),
+                area,
+            );
+        }
+        Some(IntruderPayloadSuggestionState::Ready(suggestion)) => {
+            let rows = suggestion.payloads.iter().enumerate().map(|(index, payload)| {
+                let used = app.intruder_ai_context_payloads.iter().any(|item| item == payload)
+                    || app.intruder_payloads_text.lines().any(|line| line.trim() == payload.as_str());
+                Row::new(vec![
+                    Cell::from((index + 1).to_string()),
+                    Cell::from(if used { "yes" } else { "no" }),
+                    Cell::from(payload.clone()),
+                    Cell::from("u use  Del/x delete"),
+                ])
+                .style(if used { Style::default().fg(Color::Green) } else { Style::default() })
+            });
+            let table = Table::new(
+                rows,
+                [
+                    Constraint::Length(5),
+                    Constraint::Length(6),
+                    Constraint::Percentage(64),
+                    Constraint::Percentage(25),
+                ],
+            )
+            .header(Row::new(["#", "Used", "Payload", "Action"]).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+            .block(Block::default().title(format!(" Generated AI Payloads ({}) ", suggestion.payloads.len())).borders(Borders::ALL))
+            .row_highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+            .highlight_symbol("▶ ");
+            let selected = (!suggestion.payloads.is_empty()).then_some(app.selected_intruder_ai_payload.min(suggestion.payloads.len() - 1));
+            let mut state = TableState::default().with_selected(selected);
+            if let Some(selected) = selected {
+                let visible_rows = area.height.saturating_sub(3) as usize;
+                *state.offset_mut() = selected.saturating_sub(visible_rows.saturating_sub(1));
+            }
+            frame.render_stateful_widget(table, area, &mut state);
+        }
+        None => {
+            frame.render_widget(
+                Paragraph::new("No AI payloads generated yet.")
+                    .block(Block::default().title(" Generated AI Payloads ").borders(Borders::ALL)),
+                area,
+            );
+        }
+    }
+}
+
 fn render_results(frame: &mut Frame, app: &App, area: Rect) {
+    if app.intruder_ai_mode == IntruderAiMode::PayloadSuggestionPreview {
+        render_generated_payloads(frame, app, area);
+        return;
+    }
+
     let results = app.filtered_intruder_results();
     let rows = results.iter().map(|result| {
         let status = result.status.map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
@@ -437,14 +508,20 @@ fn render_ai_plan_controls(frame: &mut Frame, app: &App, area: Rect) {
 fn render_ai_suggestion_controls(frame: &mut Frame, app: &App, area: Rect) {
     let status = match &app.intruder_ai_suggestion {
         Some(IntruderPayloadSuggestionState::Loading) => "generating safe payloads...",
-        Some(IntruderPayloadSuggestionState::Ready(_)) => "review payloads, then replace or append",
+        Some(IntruderPayloadSuggestionState::Ready(_)) => "select payload rows; u/Enter use, Del/x delete, a replace, n append",
         Some(IntruderPayloadSuggestionState::Error(_)) => "generation failed; discard or retry",
         None => "suggestion mode",
     };
     let lines = vec![
         Line::from(vec![
+            Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" select  "),
+            Span::styled(" u/Enter ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" use  "),
+            Span::styled(" Del/x ", Style::default().fg(Color::Black).bg(Color::Red)),
+            Span::raw(" delete  "),
             Span::styled(" a ", Style::default().fg(Color::Black).bg(Color::Green)),
-            Span::raw(" replace payload list  "),
+            Span::raw(" replace  "),
             Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Cyan)),
             Span::raw(" append  "),
             Span::styled(" d/Esc ", Style::default().fg(Color::Black).bg(Color::Red)),
