@@ -984,7 +984,9 @@ impl App {
             return;
         }
         let parsed: Result<std::net::SocketAddr, String> = if input.contains(':') {
-            input.parse().map_err(|error| error.to_string())
+            input
+                .parse::<std::net::SocketAddr>()
+                .map_err(|error| error.to_string())
         } else {
             input
                 .parse::<u16>()
