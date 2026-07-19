@@ -1,7 +1,8 @@
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, net::TcpListener as StdTcpListener, time::Instant};
 
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use futures_util::FutureExt;
 use hyper::HeaderMap;
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -27,7 +28,7 @@ use crate::{
         scope::{ScopeEngine, ScopeRule, ScopeRuleType},
     },
     plugins::PluginManager,
-    proxy::{run_proxy, LoggingHandler, ProxyConfig},
+    proxy::{ca::ensure_ca_certificate, run_proxy, LoggingHandler, ProxyConfig},
     scanner::{run_safe_active_scan, ActiveScanTarget, ActiveScannerEvent, Confidence, Finding, IssueDefinition, PassiveCheck, PassiveScanner, Severity},
     store::FlowStore,
 };
@@ -457,9 +458,15 @@ impl App {
             .map(|task| task.is_finished())
             .unwrap_or(false)
         {
-            self.proxy_status = ProxyStatus::Failed;
-            self.proxy_message = "Proxy task exited; see logs/proxima-tui.log".to_string();
-            self.proxy_task = None;
+            if let Some(task) = self.proxy_task.take() {
+                self.proxy_status = ProxyStatus::Failed;
+                self.proxy_message = match task.now_or_never() {
+                    Some(Ok(Ok(()))) => "Proxy stopped unexpectedly".to_string(),
+                    Some(Ok(Err(error))) => format!("Proxy failed: {error}"),
+                    Some(Err(error)) => format!("Proxy task failed: {error}"),
+                    None => "Proxy task exited; see logs/proxima-tui.log".to_string(),
+                };
+            }
         }
         if self.tick_count % 120 == 0 {
             self.autosave_project();
@@ -2875,11 +2882,32 @@ impl App {
             self.proxy_message = "Proxy is already running".to_string();
             return;
         }
+
+        if let Some(task) = self.proxy_task.take() {
+            task.abort();
+        }
+
         let config = self.proxy_config.clone();
         let listen_addr = config.listen_addr;
+
+        match StdTcpListener::bind(listen_addr) {
+            Ok(listener) => drop(listener),
+            Err(error) => {
+                self.proxy_status = ProxyStatus::Failed;
+                self.proxy_message = format!("Cannot start proxy on {listen_addr}: {error}. Try changing PROXIMA_PROXY_LISTEN or free the port.");
+                return;
+            }
+        }
+
+        if let Err(error) = ensure_ca_certificate(&config) {
+            self.proxy_status = ProxyStatus::Failed;
+            self.proxy_message = format!("Cannot prepare proxy CA certificate: {error}");
+            return;
+        }
+
         self.proxy_task = Some(run_proxy(config, LoggingHandler, self.flow_store.clone()));
         self.proxy_status = ProxyStatus::Running;
-        self.proxy_message = format!("Proxy listening on {listen_addr}");
+        self.proxy_message = format!("Proxy listening on {listen_addr}. Configure browser/system proxy to this address.");
     }
 
     fn stop_proxy(&mut self) {
