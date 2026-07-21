@@ -6531,7 +6531,7 @@ fn priority_from_label(label: &str) -> &'static str {
 }
 
 fn ai_agent_router_system_prompt() -> String {
-    r#"You are Proxima Agent Router and execution planner for an authorized web security TUI.
+    r##"You are Proxima Agent Router and execution planner for an authorized web security TUI.
 Return ONLY valid JSON. Do not use markdown fences or prose outside JSON.
 Select relevant user-created agents automatically. Build a transparent execution plan using the app's tabs/features as tools. Do not execute active traffic yourself. Any step that sends traffic, modifies targets, starts Intruder, starts Active scan, or replays WebSocket messages must be marked as requiring confirmation / high risk. Prefer passive/local analysis first.
 
@@ -6557,7 +6557,7 @@ Required JSON shape:
     {"order": 1, "tab": "WebSockets", "feature": "Read captured frames", "tool": "websocket.read_frames", "agent": "WebSocket Auditor", "risk": "passive"}
   ],
   "safety_notes": ["Passive-only unless explicitly approved"]
-}"#
+}"##
         .to_string()
 }
 
