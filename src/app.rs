@@ -46,13 +46,14 @@ pub enum Tab {
     Scanner,
     Active,
     WebSockets,
+    Brain,
     Plugins,
     Help,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Ai,
         Self::Proxy,
         Self::Repeater,
@@ -63,6 +64,7 @@ impl Tab {
         Self::Scanner,
         Self::Active,
         Self::WebSockets,
+        Self::Brain,
         Self::Plugins,
         Self::Help,
         Self::Settings,
@@ -80,6 +82,7 @@ impl Tab {
             Self::Scanner => "Scanner",
             Self::Active => "Active",
             Self::WebSockets => "WebSockets",
+            Self::Brain => "Brain",
             Self::Plugins => "Plugins",
             Self::Help => "Help",
             Self::Settings => "Settings",
@@ -199,6 +202,14 @@ pub struct App {
     pub local_clipboard: String,
     pub project_input_mode: Option<ProjectInputMode>,
     pub project_name_buffer: String,
+    pub project_panel_mode: ProjectPanelMode,
+    pub project_panel_selected: usize,
+    pub project_panel_input: String,
+    pub brain_markdown: String,
+    pub brain_dirty: bool,
+    pub brain_message: String,
+    pub brain_search: String,
+    pub brain_search_mode: bool,
     pub scope_engine: ScopeEngine,
     pub selected_scope_rule: usize,
     pub scope_input_mode: Option<ScopeInputMode>,
@@ -307,6 +318,34 @@ pub enum ScopeInputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectInputMode {
     Rename,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectPanelMode {
+    Closed,
+    Menu,
+    Input,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectPanelAction {
+    New,
+    Rename,
+    Save,
+    Open,
+}
+
+impl ProjectPanelAction {
+    pub const ALL: [Self; 4] = [Self::New, Self::Rename, Self::Save, Self::Open];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::New => "New Project",
+            Self::Rename => "Rename Project",
+            Self::Save => "Save Project",
+            Self::Open => "Open Project",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -496,6 +535,14 @@ impl App {
             local_clipboard: String::new(),
             project_input_mode: None,
             project_name_buffer: String::new(),
+            project_panel_mode: ProjectPanelMode::Closed,
+            project_panel_selected: 0,
+            project_panel_input: String::new(),
+            brain_markdown: load_brain_for_project(database.path()),
+            brain_dirty: false,
+            brain_message: "Brain loaded".to_string(),
+            brain_search: String::new(),
+            brain_search_mode: false,
             scope_engine: ScopeEngine::new(scope_rules),
             selected_scope_rule: 0,
             scope_input_mode: None,
@@ -976,6 +1023,10 @@ impl App {
             return;
         }
 
+        if self.current_tab == Tab::Brain && self.handle_brain_key(key) {
+            return;
+        }
+
         if self.current_tab == Tab::Proxy && self.handle_proxy_key(key) {
             return;
         }
@@ -1113,13 +1164,77 @@ impl App {
                 }
             }
             Tab::Scanner if self.scanner_ai_mode == ScannerAiMode::RulePrompt => Some(self.scanner_ai_input.clone()),
+            Tab::Brain => Some(self.brain_markdown.clone()),
             Tab::Settings if self.settings_editing_proxy_addr => Some(self.proxy_addr_input.clone()),
             Tab::Settings if self.project_input_mode.is_some() => Some(self.project_name_buffer.clone()),
             _ => None,
         }
     }
 
+    fn handle_brain_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                self.save_brain();
+                true
+            }
+            (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+                self.brain_search.clear();
+                self.brain_search_mode = true;
+                self.brain_message = "Search mode: type query, Esc clears search".to_string();
+                true
+            }
+            (KeyCode::Esc, _) if self.brain_search_mode => {
+                self.brain_search.clear();
+                self.brain_search_mode = false;
+                true
+            }
+            (KeyCode::Backspace, _) if self.brain_search_mode => {
+                self.brain_search.pop();
+                true
+            }
+            (KeyCode::Enter, _) if self.brain_search_mode => {
+                self.brain_search_mode = false;
+                true
+            }
+            (KeyCode::Char(ch), _) if self.brain_search_mode => {
+                self.brain_search.push(ch);
+                true
+            }
+            (KeyCode::Backspace, _) => {
+                self.brain_markdown.pop();
+                self.brain_dirty = true;
+                true
+            }
+            (KeyCode::Enter, _) => {
+                self.brain_markdown.push('\n');
+                self.brain_dirty = true;
+                true
+            }
+            (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT) => {
+                self.brain_markdown.push(ch);
+                self.brain_dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn save_brain(&mut self) {
+        let path = brain_path_for_project(self.database.path());
+        match std::fs::write(&path, &self.brain_markdown) {
+            Ok(()) => {
+                self.brain_dirty = false;
+                self.brain_message = format!("Brain saved to {}", path.display());
+            }
+            Err(error) => self.brain_message = format!("Brain save failed: {error}"),
+        }
+    }
+
     fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
+        if self.project_panel_mode != ProjectPanelMode::Closed {
+            return self.handle_project_panel_key(key);
+        }
+
         if self.project_input_mode.is_some() {
             match key.code {
                 KeyCode::Enter => {
@@ -1169,6 +1284,10 @@ impl App {
         }
 
         match (key.code, key.modifiers) {
+            (KeyCode::F(2), _) => {
+                self.open_project_panel();
+                true
+            }
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                 self.save_project_as_env();
                 true
@@ -1216,6 +1335,126 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    fn open_project_panel(&mut self) {
+        self.project_panel_mode = ProjectPanelMode::Menu;
+        self.project_panel_selected = 0;
+        self.project_panel_input.clear();
+        self.project_message = "Project Manager opened".to_string();
+    }
+
+    fn handle_project_panel_key(&mut self, key: KeyEvent) -> bool {
+        match self.project_panel_mode {
+            ProjectPanelMode::Menu => match key.code {
+                KeyCode::Esc => {
+                    self.project_panel_mode = ProjectPanelMode::Closed;
+                    true
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.project_panel_selected = (self.project_panel_selected + 1).min(ProjectPanelAction::ALL.len() - 1);
+                    true
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.project_panel_selected = self.project_panel_selected.saturating_sub(1);
+                    true
+                }
+                KeyCode::Enter => {
+                    self.activate_project_panel_action();
+                    true
+                }
+                _ => true,
+            },
+            ProjectPanelMode::Input => match key.code {
+                KeyCode::Esc => {
+                    self.project_panel_mode = ProjectPanelMode::Menu;
+                    true
+                }
+                KeyCode::Enter => {
+                    self.apply_project_panel_input();
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.project_panel_input.pop();
+                    true
+                }
+                KeyCode::Char(ch) => {
+                    self.project_panel_input.push(ch);
+                    true
+                }
+                _ => true,
+            },
+            ProjectPanelMode::Closed => false,
+        }
+    }
+
+    fn selected_project_panel_action(&self) -> ProjectPanelAction {
+        ProjectPanelAction::ALL[self.project_panel_selected.min(ProjectPanelAction::ALL.len() - 1)]
+    }
+
+    fn activate_project_panel_action(&mut self) {
+        match self.selected_project_panel_action() {
+            ProjectPanelAction::Save => {
+                self.project_panel_mode = ProjectPanelMode::Closed;
+                self.save_project_as_env();
+            }
+            ProjectPanelAction::New | ProjectPanelAction::Rename | ProjectPanelAction::Open => {
+                self.project_panel_input = match self.selected_project_panel_action() {
+                    ProjectPanelAction::Rename => self.database.path().file_stem().and_then(|s| s.to_str()).unwrap_or("proxima-project").to_string(),
+                    _ => String::new(),
+                };
+                self.project_panel_mode = ProjectPanelMode::Input;
+            }
+        }
+    }
+
+    fn apply_project_panel_input(&mut self) {
+        match self.selected_project_panel_action() {
+            ProjectPanelAction::New => self.create_new_project_from_input(),
+            ProjectPanelAction::Rename => {
+                self.project_name_buffer = self.project_panel_input.clone();
+                self.rename_project_from_buffer();
+                self.project_panel_mode = ProjectPanelMode::Closed;
+            }
+            ProjectPanelAction::Open => self.open_project_from_panel_input(),
+            ProjectPanelAction::Save => self.save_project_as_env(),
+        }
+    }
+
+    fn create_new_project_from_input(&mut self) {
+        let input = self.project_panel_input.trim();
+        let path = if input.is_empty() {
+            let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            std::env::temp_dir().join(format!("proxima-{timestamp}.db"))
+        } else {
+            resolve_project_path(self.database.path(), input)
+        };
+        self.autosave_project();
+        match Database::open(&path) {
+            Ok(database) => {
+                self.load_project_database(database);
+                self.project_panel_mode = ProjectPanelMode::Closed;
+                self.project_message = format!("Created new project {}", path.display());
+            }
+            Err(error) => self.project_message = format!("New project failed: {error}"),
+        }
+    }
+
+    fn open_project_from_panel_input(&mut self) {
+        let input = self.project_panel_input.trim();
+        if input.is_empty() {
+            self.project_message = "Project path cannot be empty".to_string();
+            return;
+        }
+        match Database::open(resolve_project_path(self.database.path(), input)) {
+            Ok(database) => {
+                let path = database.path().to_path_buf();
+                self.load_project_database(database);
+                self.project_panel_mode = ProjectPanelMode::Closed;
+                self.project_message = format!("Opened project {}", path.display());
+            }
+            Err(error) => self.project_message = format!("Open failed: {error}"),
         }
     }
 
@@ -1287,6 +1526,11 @@ impl App {
         self.scope_engine = ScopeEngine::new(self.database.load_scope_rules().unwrap_or_default());
         self.intruder_results = self.database.load_intruder_results().unwrap_or_default();
         self.findings = self.database.load_findings().unwrap_or_default();
+        self.brain_markdown = load_brain_for_project(self.database.path());
+        self.brain_dirty = false;
+        self.brain_message = "Brain loaded".to_string();
+        self.brain_search.clear();
+        self.brain_search_mode = false;
         self.selected_flow = None;
         self.selected_finding = 0;
         self.intruder_selected_result = 0;
@@ -2084,6 +2328,35 @@ impl App {
         self.project_message = "Agent workflow completed with passive/local execution".to_string();
     }
 
+    fn relevant_brain_context(&self, prompt: &str) -> Option<String> {
+        let sections = brain_sections(&self.brain_markdown);
+        if sections.is_empty() {
+            return None;
+        }
+        let prompt_words = prompt
+            .to_ascii_lowercase()
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|word| word.len() >= 3)
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut scored = sections
+            .into_iter()
+            .map(|section| {
+                let haystack = section.to_ascii_lowercase();
+                let score = prompt_words.iter().filter(|word| haystack.contains(word.as_str())).count();
+                (score, section)
+            })
+            .filter(|(score, _)| *score > 0)
+            .collect::<Vec<_>>();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        let selected = scored
+            .into_iter()
+            .take(4)
+            .map(|(_, section)| section.chars().take(1500).collect::<String>())
+            .collect::<Vec<_>>();
+        (!selected.is_empty()).then(|| selected.join("\n\n---\n\n"))
+    }
+
     fn agent_context_summary(&self) -> String {
         let selected_flow = self
             .selected_flow
@@ -2212,8 +2485,12 @@ impl App {
             self.ai_panel.status = format!("planning agent workflow with {}", self.ai_panel.settings.model);
             self.project_message = "Agent mode: building execution plan".to_string();
             let settings = self.ai_panel.settings.clone();
-            let agents = self.ai_agent_options();
-            let app_context = self.agent_context_summary();
+        let agents = self.ai_agent_options();
+        let mut app_context = self.agent_context_summary();
+        if let Some(brain) = self.relevant_brain_context(&prompt) {
+            app_context.push_str("\n\nRelevant Brain context:\n");
+            app_context.push_str(&brain);
+        }
             let tx = self.ai_tx.clone();
             tokio::spawn(async move {
                 let result = plan_ai_agents_with_ollama(settings, prompt, agents, app_context).await;
@@ -2229,9 +2506,10 @@ impl App {
         let context = self.ai_panel.attached_context.clone();
         let history = self.ai_panel.messages.clone();
         let skill = self.active_ai_skill();
+        let brain_context = self.relevant_brain_context(&prompt);
         let tx = self.ai_tx.clone();
         tokio::spawn(async move {
-            let result = ask_ollama(settings, context, history, prompt, skill).await;
+            let result = ask_ollama(settings, context, history, prompt, skill, brain_context).await;
             let _ = tx.send(AiEvent::Complete(result)).await;
         });
     }
@@ -3778,6 +4056,10 @@ impl App {
                     self.scanner_ai_input.push_str(&text);
                 }
             }
+            Tab::Brain => {
+                self.brain_markdown.push_str(&text.replace("\r\n", "\n"));
+                self.brain_dirty = true;
+            }
             Tab::Settings => {
                 if self.settings_editing_proxy_addr {
                     self.proxy_addr_input.push_str(text.trim());
@@ -4328,6 +4610,9 @@ impl App {
     }
 
     fn autosave_project(&mut self) {
+        if self.brain_dirty {
+            self.save_brain();
+        }
         self.persist_repeater_tabs();
         let _ = self
             .database
@@ -4606,6 +4891,33 @@ impl App {
     }
 }
 
+fn brain_path_for_project(project_path: &std::path::Path) -> std::path::PathBuf {
+    project_path.with_extension("brain.md")
+}
+
+fn load_brain_for_project(project_path: &std::path::Path) -> String {
+    std::fs::read_to_string(brain_path_for_project(project_path)).unwrap_or_else(|_| {
+        "# Proxima Brain\n\nWrite any Markdown knowledge here: CTF writeups, bug bounty notes, payload tricks, report templates, target context, API docs, auth flows, and personal methodology.\n".to_string()
+    })
+}
+
+fn brain_sections(markdown: &str) -> Vec<String> {
+    let mut sections = Vec::new();
+    let mut current = String::new();
+    for line in markdown.lines() {
+        if line.trim_start().starts_with('#') && !current.trim().is_empty() {
+            sections.push(current.trim().to_string());
+            current.clear();
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        sections.push(current.trim().to_string());
+    }
+    sections
+}
+
 fn resolve_project_path(current_path: &std::path::Path, input: &str) -> std::path::PathBuf {
     let mut path = std::path::PathBuf::from(input.trim());
     if path.extension().is_none() {
@@ -4754,6 +5066,7 @@ async fn ask_ollama(
     history: Vec<AiMessage>,
     prompt: String,
     skill: Option<(String, String)>,
+    brain_context: Option<String>,
 ) -> Result<String, String> {
     let mut messages = vec![OllamaMessage {
         role: "system".to_string(),
@@ -4764,6 +5077,13 @@ async fn ask_ollama(
         messages.push(OllamaMessage {
             role: "system".to_string(),
             content: format!("Active Proxima skill: {name}\nSkill instructions in Markdown:\n{body}\nUse this skill to shape the answer, but keep evidence and uncertainty clear."),
+        });
+    }
+
+    if let Some(brain) = brain_context {
+        messages.push(OllamaMessage {
+            role: "system".to_string(),
+            content: format!("Relevant Proxima Brain notes from the user's Markdown knowledge base:\n{brain}\nTreat these as user-provided notes; use them when relevant and do not assume they are always complete."),
         });
     }
 

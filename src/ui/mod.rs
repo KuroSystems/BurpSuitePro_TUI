@@ -18,7 +18,7 @@ mod scanner_tab;
 mod websocket_tab;
 
 use crate::{
-    app::{agent_tool_catalog, App, ScopeAiMode, Tab},
+    app::{agent_tool_catalog, App, ProjectPanelAction, ProjectPanelMode, ScopeAiMode, Tab},
     models::{
         ai::{ScopeRuleProposal, ScopeRuleProposalState},
         scope::{ScopeEngine, ScopeRule, ScopeRuleType},
@@ -82,6 +82,7 @@ fn render_current_tab(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Scanner => scanner_tab::render_scanner_tab(frame, app, area),
         Tab::Active => active_tab::render_active_tab(frame, app, area),
         Tab::WebSockets => websocket_tab::render_websocket_tab(frame, app, area),
+        Tab::Brain => render_brain(frame, app, area),
         Tab::Plugins => plugin_tab::render_plugin_tab(frame, app, area),
         Tab::Help => render_help(frame, app, area),
         Tab::Settings => render_settings(frame, app, area),
@@ -273,6 +274,77 @@ fn confidence_span(confidence: Option<f32>) -> Span<'static> {
     Span::styled(format!("confidence: {:.0}%", value.clamp(0.0, 1.0) * 100.0), Style::default().fg(Color::Green))
 }
 
+fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(4)])
+        .split(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(layout[0]);
+
+    let editor_lines = app
+        .brain_markdown
+        .lines()
+        .map(|line| Line::raw(line.to_string()))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(editor_lines)
+            .block(Block::default().title(" Proxima Brain Markdown ").borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)))
+            .wrap(Wrap { trim: false }),
+        columns[0],
+    );
+
+    let sections = brain_heading_lines(&app.brain_markdown, &app.brain_search);
+    frame.render_widget(
+        Paragraph::new(sections)
+            .block(Block::default().title(" Brain Index / Search ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        columns[1],
+    );
+
+    let words = app.brain_markdown.split_whitespace().count();
+    let section_count = app.brain_markdown.lines().filter(|line| line.trim_start().starts_with('#')).count();
+    let footer = vec![
+        Line::from(vec![
+            Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" save brain  "),
+            Span::styled(" Ctrl+F ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" search  "),
+            Span::styled(if app.brain_dirty { " unsaved " } else { " saved " }, Style::default().fg(Color::Black).bg(if app.brain_dirty { Color::Yellow } else { Color::Green })),
+            Span::raw(format!(" sections: {section_count} words: {words}")),
+        ]),
+        Line::styled(app.brain_message.clone(), Style::default().fg(Color::DarkGray)),
+    ];
+    frame.render_widget(
+        Paragraph::new(footer).block(Block::default().title(" Brain Status ").borders(Borders::ALL)),
+        layout[1],
+    );
+}
+
+fn brain_heading_lines(markdown: &str, search: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if !search.is_empty() {
+        lines.push(Line::styled(format!("search: {search}_"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        lines.push(Line::raw(""));
+    }
+    for line in markdown.lines().filter(|line| line.trim_start().starts_with('#')) {
+        if search.is_empty() || line.to_ascii_lowercase().contains(&search.to_ascii_lowercase()) {
+            let level = line.chars().take_while(|ch| *ch == '#').count();
+            let indent = "  ".repeat(level.saturating_sub(1));
+            lines.push(Line::from(vec![
+                Span::styled(format!("{indent}▶ "), Style::default().fg(Color::Cyan)),
+                Span::styled(line.trim_start_matches('#').trim().to_string(), Style::default().fg(if level == 1 { Color::Magenta } else { Color::Cyan }).add_modifier(Modifier::BOLD)),
+            ]));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled("No headings yet. Add Markdown headings with # or ##.", Style::default().fg(Color::DarkGray)));
+    }
+    lines
+}
+
 fn render_help(frame: &mut Frame, _app: &App, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -340,6 +412,9 @@ fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
     render_proxy_settings(frame, app, columns[0]);
     render_ai_settings(frame, app, columns[1]);
+    if app.project_panel_mode != ProjectPanelMode::Closed {
+        render_project_panel(frame, app, area);
+    }
 }
 
 fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
@@ -380,7 +455,9 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" x/F7 ", Style::default().fg(Color::Black).bg(Color::Red)),
             Span::raw(" stop  "),
             Span::styled(" p ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::raw(" edit port"),
+            Span::raw(" edit port  "),
+            Span::styled(" F2 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" project panel"),
         ]),
         Line::from(vec![
             Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Green)),
@@ -409,6 +486,88 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn render_project_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_rect(64, 62, area);
+    frame.render_widget(ratatui::widgets::Clear, popup);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(0), Constraint::Length(4)])
+        .split(popup);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Project Manager", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Line::raw(format!("Current: {}", app.database.path().display())),
+        ])
+        .block(Block::default().title(" Project Panel ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan))),
+        layout[0],
+    );
+
+    match app.project_panel_mode {
+        ProjectPanelMode::Menu => {
+            let items = ProjectPanelAction::ALL.iter().enumerate().map(|(index, action)| {
+                let selected = index == app.project_panel_selected;
+                Line::from(vec![
+                    Span::styled(if selected { "▶ " } else { "  " }, Style::default().fg(Color::Cyan)),
+                    Span::styled(action.label(), Style::default().fg(if selected { Color::Green } else { Color::Gray }).add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() })),
+                ])
+            }).collect::<Vec<_>>();
+            frame.render_widget(
+                Paragraph::new(items)
+                    .block(Block::default().title(" Choose Action ").borders(Borders::ALL))
+                    .wrap(Wrap { trim: true }),
+                layout[1],
+            );
+        }
+        ProjectPanelMode::Input => {
+            let action = ProjectPanelAction::ALL[app.project_panel_selected.min(ProjectPanelAction::ALL.len() - 1)];
+            let hint = match action {
+                ProjectPanelAction::New => "Enter new project name/path. Empty auto-generates a timestamped project.",
+                ProjectPanelAction::Rename => "Enter new project name/path. Relative names stay near current project.",
+                ProjectPanelAction::Open => "Enter project path/name to open.",
+                ProjectPanelAction::Save => "Save uses current project path.",
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(action.label(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Line::raw(hint),
+                    Line::raw(""),
+                    Line::from(vec![Span::styled("> ", Style::default().fg(Color::Cyan)), Span::raw(format!("{} _", app.project_panel_input))]),
+                ])
+                .block(Block::default().title(" Project Input ").borders(Borders::ALL))
+                .wrap(Wrap { trim: true }),
+                layout[1],
+            );
+        }
+        ProjectPanelMode::Closed => {}
+    }
+
+    frame.render_widget(
+        Paragraph::new("↑/↓ choose • Enter select/apply • Esc close/back • F2 opens Project Panel")
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL)),
+        layout[2],
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn render_ai_settings(frame: &mut Frame, app: &App, area: Rect) {
@@ -527,6 +686,8 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         " Ctrl+K chain  Ctrl+G/F2 agent  "
     } else if app.current_tab == Tab::Comparer {
         " Ctrl+K AI summary  "
+    } else if app.current_tab == Tab::Brain {
+        " Ctrl+S save brain  Ctrl+F search  "
     } else if app.current_tab == Tab::Help {
         " agent tool catalog  "
     } else {
