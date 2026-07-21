@@ -7,11 +7,16 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AiSkillFormat, AiSkillModalField, App},
+    app::{AgentApprovalSelection, AiAgentModalField, AiPromptMode, AiSkillFormat, AiSkillModalField, App},
+    models::ai::AiAgentPlanState,
     models::ai::{AiRole, QUICK_PROMPTS},
 };
 
 pub fn render_ai_tab(frame: &mut Frame, app: &App, area: Rect) {
+    if app.ai_agent_page_open {
+        render_agent_page(frame, app, area);
+        return;
+    }
     if app.ai_skill_page_open {
         render_skill_page(frame, app, area);
         return;
@@ -44,6 +49,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(&app.ai_panel.settings.model, Style::default().fg(Color::Green)),
         Span::raw("  status: "),
         Span::styled(waiting, Style::default().fg(if app.ai_panel.is_waiting { Color::Yellow } else { Color::Gray })),
+        Span::raw("  mode: "),
+        Span::styled(app.ai_prompt_mode.label(), Style::default().fg(if app.ai_prompt_mode == AiPromptMode::Agent { Color::Magenta } else { Color::Cyan }).add_modifier(Modifier::BOLD)),
         Span::raw("  skill: "),
         Span::styled(active_skill, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
         Span::raw("  redaction: "),
@@ -86,7 +93,7 @@ fn render_context(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = Vec::new();
-    for message in app.ai_panel.messages.iter().rev().take(10).rev() {
+    for message in app.ai_panel.messages.iter().rev().take(12).rev() {
         let style = match message.role {
             AiRole::User => Style::default().fg(Color::Green),
             AiRole::Assistant => Style::default().fg(Color::Cyan),
@@ -102,17 +109,45 @@ fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::raw(""));
     }
+    if app.ai_panel.is_waiting && app.ai_prompt_mode == AiPromptMode::Agent {
+        push_agent_planning_animation(&mut lines, app.tick_count);
+    }
+    if matches!(app.ai_agent_plan_state, Some(AiAgentPlanState::AwaitingApproval(_))) {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Plan Approval", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+        let accept_selected = app.ai_agent_approval_selection == AgentApprovalSelection::Accept;
+        lines.push(Line::styled(if accept_selected { "▶ [a] Accept" } else { "  [a] Accept" }, Style::default().fg(if accept_selected { Color::Green } else { Color::Gray }).add_modifier(if accept_selected { Modifier::BOLD } else { Modifier::empty() })));
+        lines.push(Line::styled(if !accept_selected { "▶ [d] Decline" } else { "  [d] Decline" }, Style::default().fg(if !accept_selected { Color::Red } else { Color::Gray }).add_modifier(if !accept_selected { Modifier::BOLD } else { Modifier::empty() })));
+        lines.push(Line::styled("Tab toggles • Enter confirms", Style::default().fg(Color::DarkGray)));
+    }
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().title(" Conversation  Markdown rendered ").borders(Borders::ALL))
+            .block(Block::default().title(" Conversation Markdown Rendered  PageUp/PageDown scroll ").borders(Borders::ALL))
+            .scroll((app.ai_conversation_scroll, 0))
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
+fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, tick: u64) {
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(tick as usize) % 10];
+    let stages = ["Routing request", "Scoring custom agents", "Mapping app tools", "Checking safety gates", "Building execution plan"];
+    let current = ((tick / 6) as usize) % stages.len();
+    lines.push(Line::styled("Agent Mode", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+    for (index, stage) in stages.iter().enumerate() {
+        if index < current {
+            lines.push(Line::styled(format!("✓ {stage}"), Style::default().fg(Color::Green)));
+        } else if index == current {
+            lines.push(Line::styled(format!("{spinner} {stage}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        } else {
+            lines.push(Line::styled(format!("• {stage}"), Style::default().fg(Color::DarkGray)));
+        }
+    }
+}
+
 fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
-    let help = "Enter/Ctrl+Enter send  Alt+Enter newline  F2 Skills  Ctrl+A attach flow  Alt+1..6 quick prompts";
+    let help = "Enter send  Tab Skill/Agent  F2 Skills  F3 Agents  PageUp/PageDown scroll  Ctrl+A attach flow";
     let input = if app.ai_panel.input.is_empty() {
         "Ask about selected flow, finding impact, next safe step, or payload ideas...".to_string()
     } else {
@@ -120,7 +155,11 @@ fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
     };
     let lines = vec![
         Line::from(vec![
+            Span::styled(format!(" Mode:{} ", app.ai_prompt_mode.label()), Style::default().fg(Color::Black).bg(if app.ai_prompt_mode == AiPromptMode::Agent { Color::Magenta } else { Color::Cyan }).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
             Span::styled(" Skills:F2 ", Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(" Agents:F3 ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(help, Style::default().fg(Color::DarkGray)),
         ]),
@@ -300,6 +339,128 @@ fn render_json_skill_lines(body: &str) -> Vec<Line<'static>> {
             Line::raw(body.to_string()),
         ],
     }
+}
+
+fn render_agent_page(frame: &mut Frame, app: &App, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+    let title = Line::from(vec![
+        Span::styled(" Proxima Agent Page ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw(" hidden page • n new agent • F3/Esc close • Tab focus"),
+    ]);
+    frame.render_widget(Paragraph::new(title).block(Block::default().borders(Borders::ALL)), layout[0]);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .split(layout[1]);
+    render_agent_list(frame, app, body[0]);
+    render_agent_editor(frame, app, body[1]);
+    let footer = Line::from(vec![
+        Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Green)),
+        Span::raw(" new agent  "),
+        Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+        Span::raw(" select  "),
+        Span::styled(" Tab ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::raw(" list/editor  Agent Mode auto-selects relevant agents"),
+    ]);
+    frame.render_widget(Paragraph::new(footer).block(Block::default().borders(Borders::ALL)), layout[2]);
+    if app.ai_agent_modal_open {
+        render_agent_modal(frame, app, area);
+    }
+}
+
+fn render_agent_list(frame: &mut Frame, app: &App, area: Rect) {
+    let agents = app.ai_agent_options();
+    let items = agents
+        .iter()
+        .enumerate()
+        .map(|(index, (name, format, body))| {
+            let mut lines = vec![Line::from(vec![
+                Span::styled(name.clone(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
+                Span::styled(format.label(), Style::default().fg(Color::DarkGray)),
+            ])];
+            lines.push(Line::styled(body.lines().next().unwrap_or("No agent instructions").chars().take(80).collect::<String>(), Style::default().fg(Color::DarkGray)));
+            if index + 1 < agents.len() {
+                lines.push(Line::raw(""));
+            }
+            ListItem::new(lines)
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default().with_selected(Some(app.ai_selected_agent.min(agents.len().saturating_sub(1))));
+    let title = if app.ai_agent_editor_focused { " Agents " } else { " Agents [focused] " };
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().title(title).borders(Borders::ALL).border_style(if app.ai_agent_editor_focused { Style::default() } else { Style::default().fg(Color::Green) }))
+            .highlight_symbol("▶ ")
+            .highlight_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        area,
+        &mut state,
+    );
+}
+
+fn render_agent_editor(frame: &mut Frame, app: &App, area: Rect) {
+    let (name, format, body) = app
+        .selected_ai_agent_tuple()
+        .unwrap_or_else(|| ("No Agent".to_string(), AiSkillFormat::Markdown, String::new()));
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("# {name}"), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(format.label(), Style::default().fg(Color::Magenta)),
+    ]), Line::raw("")];
+    if detected_skill_format(&body, format) == AiSkillFormat::Json {
+        lines.extend(render_json_skill_lines(&body));
+    } else {
+        lines.extend(render_markdown_lines(&body));
+    }
+    let title = if app.ai_agent_editor_focused { " Agent Definition Editor [focused] " } else { " Agent Definition Editor " };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title(title).borders(Borders::ALL).border_style(if app.ai_agent_editor_focused { Style::default().fg(Color::Green) } else { Style::default() }))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_agent_modal(frame: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_rect(70, 70, area);
+    frame.render_widget(Clear, popup);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
+        .split(popup);
+    let title_style = if app.ai_agent_modal_field == AiAgentModalField::Title { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default() };
+    let format_style = if app.ai_agent_modal_field == AiAgentModalField::Format { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default() };
+    let body_style = if app.ai_agent_modal_field == AiAgentModalField::Body { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default() };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled("Agent Title: ", title_style), Span::raw(format!("{}{}", app.ai_agent_modal_title, if app.ai_agent_modal_field == AiAgentModalField::Title { "_" } else { "" }))]))
+            .block(Block::default().title(" New Agent ").borders(Borders::ALL).border_style(Style::default().fg(Color::Green))),
+        layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled("Format: ", format_style), Span::styled(app.ai_agent_modal_format.label(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw("  (Space/←/→ toggles)")]))
+            .block(Block::default().borders(Borders::ALL)),
+        layout[1],
+    );
+    let body_lines = if app.ai_agent_modal_body.is_empty() {
+        vec![Line::styled("Write JSON or Markdown agent instructions here...", Style::default().fg(Color::DarkGray))]
+    } else {
+        app.ai_agent_modal_body.lines().map(|line| Line::raw(line.to_string())).collect()
+    };
+    frame.render_widget(
+        Paragraph::new(body_lines)
+            .block(Block::default().title(" Agent Instructions / Tools / Safety ").borders(Borders::ALL).border_style(body_style))
+            .wrap(Wrap { trim: false }),
+        layout[2],
+    );
+    frame.render_widget(
+        Paragraph::new("Tab next field • Ctrl+Enter save • Enter saves outside body / newline in body • Esc cancel")
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL)),
+        layout[3],
+    );
 }
 
 fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {

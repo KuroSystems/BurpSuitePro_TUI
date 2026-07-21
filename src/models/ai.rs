@@ -147,6 +147,9 @@ pub enum AiEvent {
     OllamaModelsComplete {
         result: Result<Vec<String>, String>,
     },
+    AgentPlanComplete {
+        result: Result<AiAgentPlan, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -531,6 +534,57 @@ pub struct ComparerChange {
 pub enum ComparerSummaryState {
     Loading,
     Ready(ComparerSummary),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiAgentPlan {
+    #[serde(default)]
+    pub selected_agents: Vec<AiAgentSelection>,
+    #[serde(default)]
+    pub requires_confirmation: bool,
+    #[serde(default)]
+    pub risk_level: String,
+    #[serde(default)]
+    pub plan_markdown: String,
+    #[serde(default)]
+    pub steps: Vec<AiAgentPlanStep>,
+    #[serde(default)]
+    pub safety_notes: Vec<String>,
+    #[serde(default)]
+    pub raw_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiAgentSelection {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiAgentPlanStep {
+    #[serde(default)]
+    pub order: usize,
+    #[serde(default)]
+    pub tab: String,
+    #[serde(default)]
+    pub feature: String,
+    #[serde(default)]
+    pub tool: String,
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub risk: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum AiAgentPlanState {
+    Planning,
+    AwaitingApproval(AiAgentPlan),
+    Running(AiAgentPlan),
+    Complete(String),
     Error(String),
 }
 

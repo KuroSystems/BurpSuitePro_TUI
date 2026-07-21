@@ -11,8 +11,9 @@ use crate::{
     events::{Event, ProxyEvent, RepeaterEvent},
     models::{
         ai::{
-            AiContext, AiEvent, AiMessage, AiPanelState, ComparerSummary, ComparerSummaryState,
-            DecoderAgentResult, DecoderAgentState, DecoderChainSuggestion, DecoderChainSuggestionState,
+            AiAgentPlan, AiAgentPlanState, AiContext, AiEvent, AiMessage, AiPanelState,
+            ComparerSummary, ComparerSummaryState, DecoderAgentResult, DecoderAgentState,
+            DecoderChainSuggestion, DecoderChainSuggestionState,
             FindingTriage, FindingTriageState, FlowExplanation,
             FlowExplanationState, IntruderAttackPlan, IntruderAttackPlanState,
             IntruderPayloadSuggestion, IntruderPayloadSuggestionState, IntruderPlanPayloadSet,
@@ -254,6 +255,8 @@ pub struct App {
     pub plugin_manager: PluginManager,
     pub selected_plugin: usize,
     pub ai_panel: AiPanelState,
+    pub ai_prompt_mode: AiPromptMode,
+    pub ai_conversation_scroll: u16,
     pub ai_skill_page_open: bool,
     pub ai_skill_editor_focused: bool,
     pub ai_selected_skill: usize,
@@ -263,6 +266,17 @@ pub struct App {
     pub ai_skill_modal_title: String,
     pub ai_skill_modal_format: AiSkillFormat,
     pub ai_skill_modal_body: String,
+    pub ai_agent_page_open: bool,
+    pub ai_agent_editor_focused: bool,
+    pub ai_selected_agent: usize,
+    pub ai_custom_agents: Vec<CustomAiAgent>,
+    pub ai_agent_modal_open: bool,
+    pub ai_agent_modal_field: AiAgentModalField,
+    pub ai_agent_modal_title: String,
+    pub ai_agent_modal_format: AiSkillFormat,
+    pub ai_agent_modal_body: String,
+    pub ai_agent_plan_state: Option<AiAgentPlanState>,
+    pub ai_agent_approval_selection: AgentApprovalSelection,
     pub flow_ai_explanations: HashMap<u64, FlowExplanationState>,
     pub finding_triage: HashMap<i64, FindingTriageState>,
     pub ollama_models: Vec<String>,
@@ -319,6 +333,48 @@ pub struct CustomAiSkill {
     pub title: String,
     pub format: AiSkillFormat,
     pub body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiPromptMode {
+    Skill,
+    Agent,
+}
+
+impl AiPromptMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Skill => "Skill",
+            Self::Agent => "Agent",
+        }
+    }
+
+    fn toggle(self) -> Self {
+        match self {
+            Self::Skill => Self::Agent,
+            Self::Agent => Self::Skill,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CustomAiAgent {
+    pub title: String,
+    pub format: AiSkillFormat,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiAgentModalField {
+    Title,
+    Format,
+    Body,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentApprovalSelection {
+    Accept,
+    Decline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,6 +506,8 @@ impl App {
             plugin_manager: PluginManager::load_default(),
             selected_plugin: 0,
             ai_panel: AiPanelState::default(),
+            ai_prompt_mode: AiPromptMode::Skill,
+            ai_conversation_scroll: 0,
             ai_skill_page_open: false,
             ai_skill_editor_focused: false,
             ai_selected_skill: 0,
@@ -459,6 +517,17 @@ impl App {
             ai_skill_modal_title: String::new(),
             ai_skill_modal_format: AiSkillFormat::Markdown,
             ai_skill_modal_body: String::new(),
+            ai_agent_page_open: false,
+            ai_agent_editor_focused: false,
+            ai_selected_agent: 0,
+            ai_custom_agents: default_ai_agents(),
+            ai_agent_modal_open: false,
+            ai_agent_modal_field: AiAgentModalField::Title,
+            ai_agent_modal_title: String::new(),
+            ai_agent_modal_format: AiSkillFormat::Markdown,
+            ai_agent_modal_body: String::new(),
+            ai_agent_plan_state: None,
+            ai_agent_approval_selection: AgentApprovalSelection::Accept,
             flow_ai_explanations: HashMap::new(),
             finding_triage: HashMap::new(),
             ollama_models: Vec::new(),
@@ -801,6 +870,21 @@ impl App {
                     self.project_message = format!("AI passive rule generator failed: {error}");
                 }
             },
+            AiEvent::AgentPlanComplete { result } => match result {
+                Ok(plan) => {
+                    self.ai_panel.is_waiting = false;
+                    self.ai_agent_approval_selection = AgentApprovalSelection::Accept;
+                    self.ai_agent_plan_state = Some(AiAgentPlanState::AwaitingApproval(plan.clone()));
+                    self.ai_panel.messages.push(AiMessage::assistant(plan.plan_markdown.clone()));
+                    self.ai_panel.status = "agent plan awaiting approval".to_string();
+                }
+                Err(error) => {
+                    self.ai_panel.is_waiting = false;
+                    self.ai_agent_plan_state = Some(AiAgentPlanState::Error(error.clone()));
+                    self.ai_panel.messages.push(AiMessage::assistant(format!("## Agent planning failed\n\n{error}")));
+                    self.ai_panel.status = format!("agent planning error: {error}");
+                }
+            },
             AiEvent::OllamaModelsComplete { result } => match result {
                 Ok(models) => {
                     self.ollama_models = models;
@@ -934,6 +1018,15 @@ impl App {
 
     fn active_editable_text(&self) -> Option<String> {
         match self.current_tab {
+            Tab::Ai if self.ai_agent_page_open && self.ai_agent_modal_open => Some(match self.ai_agent_modal_field {
+                AiAgentModalField::Title => self.ai_agent_modal_title.clone(),
+                AiAgentModalField::Format => self.ai_agent_modal_format.label().to_string(),
+                AiAgentModalField::Body => self.ai_agent_modal_body.clone(),
+            }),
+            Tab::Ai if self.ai_agent_page_open && self.ai_agent_editor_focused => self
+                .ai_custom_agents
+                .get(self.ai_selected_agent)
+                .map(|agent| agent.body.clone()),
             Tab::Ai if self.ai_skill_page_open && self.ai_skill_modal_open => Some(match self.ai_skill_modal_field {
                 AiSkillModalField::Title => self.ai_skill_modal_title.clone(),
                 AiSkillModalField::Format => self.ai_skill_modal_format.label().to_string(),
@@ -1285,6 +1378,63 @@ impl App {
         self.ai_skill_modal_body.clear();
     }
 
+    pub fn ai_agent_options(&self) -> Vec<(String, AiSkillFormat, String)> {
+        self.ai_custom_agents
+            .iter()
+            .map(|agent| (agent.title.clone(), agent.format, agent.body.clone()))
+            .collect()
+    }
+
+    pub fn selected_ai_agent_tuple(&self) -> Option<(String, AiSkillFormat, String)> {
+        let agents = self.ai_agent_options();
+        agents.get(self.ai_selected_agent.min(agents.len().saturating_sub(1))).cloned()
+    }
+
+    fn select_next_ai_agent(&mut self) {
+        let count = self.ai_agent_options().len().max(1);
+        self.ai_selected_agent = (self.ai_selected_agent + 1).min(count.saturating_sub(1));
+    }
+
+    fn select_previous_ai_agent(&mut self) {
+        self.ai_selected_agent = self.ai_selected_agent.saturating_sub(1);
+    }
+
+    fn open_ai_agent_modal(&mut self) {
+        self.ai_agent_modal_open = true;
+        self.ai_agent_modal_field = AiAgentModalField::Title;
+        self.ai_agent_modal_title.clear();
+        self.ai_agent_modal_format = AiSkillFormat::Markdown;
+        self.ai_agent_modal_body.clear();
+    }
+
+    fn save_ai_agent_modal(&mut self) {
+        let title = if self.ai_agent_modal_title.trim().is_empty() {
+            format!("Custom Agent {}", self.ai_custom_agents.len() + 1)
+        } else {
+            self.ai_agent_modal_title.trim().to_string()
+        };
+        let body = self.ai_agent_modal_body.trim().to_string();
+        if body.is_empty() {
+            self.project_message = "Agent body cannot be empty".to_string();
+            return;
+        }
+        self.ai_custom_agents.push(CustomAiAgent {
+            title: title.clone(),
+            format: self.ai_agent_modal_format,
+            body,
+        });
+        self.ai_selected_agent = self.ai_agent_options().len().saturating_sub(1);
+        self.ai_agent_modal_open = false;
+        self.ai_agent_editor_focused = true;
+        self.project_message = format!("Saved AI agent: {title}");
+    }
+
+    fn cancel_ai_agent_modal(&mut self) {
+        self.ai_agent_modal_open = false;
+        self.ai_agent_modal_title.clear();
+        self.ai_agent_modal_body.clear();
+    }
+
     pub fn ai_model_options(&self) -> Vec<String> {
         let mut models = Vec::new();
         for model in self.ollama_models.iter().chain(self.ai_model_presets.iter()) {
@@ -1541,6 +1691,35 @@ impl App {
         if self.ai_skill_page_open {
             return self.handle_ai_skill_key(key);
         }
+        if self.ai_agent_page_open {
+            return self.handle_ai_agent_key(key);
+        }
+        if matches!(self.ai_agent_plan_state, Some(AiAgentPlanState::AwaitingApproval(_))) {
+            match (key.code, key.modifiers) {
+                (KeyCode::Tab, _) => {
+                    self.ai_agent_approval_selection = match self.ai_agent_approval_selection {
+                        AgentApprovalSelection::Accept => AgentApprovalSelection::Decline,
+                        AgentApprovalSelection::Decline => AgentApprovalSelection::Accept,
+                    };
+                    return true;
+                }
+                (KeyCode::Enter, _) => {
+                    self.confirm_agent_plan_selection();
+                    return true;
+                }
+                (KeyCode::Char('a'), _) => {
+                    self.ai_agent_approval_selection = AgentApprovalSelection::Accept;
+                    self.confirm_agent_plan_selection();
+                    return true;
+                }
+                (KeyCode::Char('d'), _) | (KeyCode::Esc, _) => {
+                    self.ai_agent_approval_selection = AgentApprovalSelection::Decline;
+                    self.confirm_agent_plan_selection();
+                    return true;
+                }
+                _ => {}
+            }
+        }
 
         match (key.code, key.modifiers) {
             (KeyCode::F(2), _) => {
@@ -1548,6 +1727,24 @@ impl App {
                 self.ai_skill_editor_focused = false;
                 true
             },
+            (KeyCode::F(3), _) => {
+                self.ai_agent_page_open = true;
+                self.ai_agent_editor_focused = false;
+                true
+            },
+            (KeyCode::Tab, _) => {
+                self.ai_prompt_mode = self.ai_prompt_mode.toggle();
+                self.project_message = format!("AI prompt mode: {}", self.ai_prompt_mode.label());
+                true
+            }
+            (KeyCode::PageDown, _) => {
+                self.ai_conversation_scroll = self.ai_conversation_scroll.saturating_add(8);
+                true
+            }
+            (KeyCode::PageUp, _) => {
+                self.ai_conversation_scroll = self.ai_conversation_scroll.saturating_sub(8);
+                true
+            }
             (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::ALT) => {
                 self.ai_panel.input.push('\n');
                 true
@@ -1646,6 +1843,103 @@ impl App {
         }
     }
 
+    fn handle_ai_agent_key(&mut self, key: KeyEvent) -> bool {
+        if self.ai_agent_modal_open {
+            return self.handle_ai_agent_modal_key(key);
+        }
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) | (KeyCode::F(3), _) => {
+                self.ai_agent_page_open = false;
+                true
+            }
+            (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                self.open_ai_agent_modal();
+                true
+            }
+            (KeyCode::Tab, _) => {
+                self.ai_agent_editor_focused = !self.ai_agent_editor_focused;
+                true
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) if !self.ai_agent_editor_focused => {
+                self.select_next_ai_agent();
+                true
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) if !self.ai_agent_editor_focused => {
+                self.select_previous_ai_agent();
+                true
+            }
+            (KeyCode::Backspace, _) if self.ai_agent_editor_focused => {
+                if let Some(agent) = self.ai_custom_agents.get_mut(self.ai_selected_agent) {
+                    agent.body.pop();
+                }
+                true
+            }
+            (KeyCode::Enter, _) if self.ai_agent_editor_focused => {
+                if let Some(agent) = self.ai_custom_agents.get_mut(self.ai_selected_agent) {
+                    agent.body.push('\n');
+                }
+                true
+            }
+            (KeyCode::Char(char), KeyModifiers::NONE) | (KeyCode::Char(char), KeyModifiers::SHIFT) if self.ai_agent_editor_focused => {
+                if let Some(agent) = self.ai_custom_agents.get_mut(self.ai_selected_agent) {
+                    agent.body.push(char);
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn handle_ai_agent_modal_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
+                self.cancel_ai_agent_modal();
+                true
+            }
+            (KeyCode::Enter, KeyModifiers::CONTROL) => {
+                self.save_ai_agent_modal();
+                true
+            }
+            (KeyCode::Tab, _) => {
+                self.ai_agent_modal_field = match self.ai_agent_modal_field {
+                    AiAgentModalField::Title => AiAgentModalField::Format,
+                    AiAgentModalField::Format => AiAgentModalField::Body,
+                    AiAgentModalField::Body => AiAgentModalField::Title,
+                };
+                true
+            }
+            (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Char(' '), _) if self.ai_agent_modal_field == AiAgentModalField::Format => {
+                self.ai_agent_modal_format = self.ai_agent_modal_format.toggle();
+                true
+            }
+            (KeyCode::Backspace, _) => {
+                match self.ai_agent_modal_field {
+                    AiAgentModalField::Title => { self.ai_agent_modal_title.pop(); }
+                    AiAgentModalField::Body => { self.ai_agent_modal_body.pop(); }
+                    AiAgentModalField::Format => {}
+                }
+                true
+            }
+            (KeyCode::Enter, _) if self.ai_agent_modal_field == AiAgentModalField::Body => {
+                self.ai_agent_modal_body.push('\n');
+                true
+            }
+            (KeyCode::Enter, _) => {
+                self.save_ai_agent_modal();
+                true
+            }
+            (KeyCode::Char(char), KeyModifiers::NONE) | (KeyCode::Char(char), KeyModifiers::SHIFT) => {
+                match self.ai_agent_modal_field {
+                    AiAgentModalField::Title => self.ai_agent_modal_title.push(char),
+                    AiAgentModalField::Body => self.ai_agent_modal_body.push(char),
+                    AiAgentModalField::Format => {}
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
     fn handle_ai_skill_modal_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => {
@@ -1694,6 +1988,89 @@ impl App {
             }
             _ => true,
         }
+    }
+
+    fn confirm_agent_plan_selection(&mut self) {
+        let Some(AiAgentPlanState::AwaitingApproval(plan)) = self.ai_agent_plan_state.clone() else {
+            return;
+        };
+        match self.ai_agent_approval_selection {
+            AgentApprovalSelection::Accept => self.execute_agent_plan(plan),
+            AgentApprovalSelection::Decline => {
+                self.ai_agent_plan_state = None;
+                self.ai_panel.messages.push(AiMessage::assistant("## Agent plan declined\n\nNo workflow was executed."));
+                self.ai_panel.status = "agent plan declined".to_string();
+            }
+        }
+    }
+
+    fn execute_agent_plan(&mut self, plan: AiAgentPlan) {
+        self.ai_agent_plan_state = Some(AiAgentPlanState::Running(plan.clone()));
+        let report = self.agent_execution_report(&plan);
+        self.ai_agent_plan_state = Some(AiAgentPlanState::Complete(report.clone()));
+        self.ai_panel.messages.push(AiMessage::assistant(report));
+        self.ai_panel.status = "agent workflow complete".to_string();
+        self.project_message = "Agent workflow completed with passive/local execution".to_string();
+    }
+
+    fn agent_context_summary(&self) -> String {
+        let selected_flow = self
+            .selected_flow
+            .and_then(|index| self.flow_store.snapshot().get(index).cloned())
+            .map(|flow| format!("selected flow #{} {} {} status {:?}", flow.id, flow.method, flow.uri, flow.status))
+            .unwrap_or_else(|| "no selected proxy flow".to_string());
+        let websocket_count = self.flow_store.websocket_snapshot().len();
+        let finding_count = self.findings.len();
+        let in_scope = self
+            .selected_flow
+            .and_then(|index| self.flow_store.snapshot().get(index).cloned())
+            .map(|flow| self.scope_engine.is_in_scope(&flow.uri))
+            .unwrap_or(false);
+        format!(
+            "App context:\n- {selected_flow}\n- selected flow in scope: {in_scope}\n- scanner findings: {finding_count}\n- websocket frames: {websocket_count}\n- active targets queued: {}\n- current tab: {}",
+            self.active_scan_targets.len(),
+            self.current_tab.title()
+        )
+    }
+
+    fn agent_execution_report(&self, plan: &AiAgentPlan) -> String {
+        let flows = self.flow_store.snapshot();
+        let websockets = self.flow_store.websocket_snapshot();
+        let selected_flow = self
+            .selected_flow
+            .and_then(|index| flows.get(index).cloned());
+        let selected_flow_md = selected_flow
+            .as_ref()
+            .map(|flow| format!("- Flow #{}: `{} {}` status `{:?}`", flow.id, flow.method, flow.uri, flow.status))
+            .unwrap_or_else(|| "- No selected flow available".to_string());
+        let top_findings = self
+            .findings
+            .iter()
+            .take(5)
+            .map(|finding| format!("- `{}` {} {}", finding.severity.label(), finding.issue_name, finding.url))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let selected_agents = plan
+            .selected_agents
+            .iter()
+            .map(|agent| format!("- **{}** — {}", agent.name, agent.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let steps = plan
+            .steps
+            .iter()
+            .map(|step| format!("- ✅ Step {}: **{}** → {} (`{}`)", step.order, step.tab, step.feature, step.tool))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "## Agent Execution Result\n\n### Selected Agents\n{}\n\n### Executed Passive/Local Steps\n{}\n\n### Evidence Pack\n{}\n- Scanner findings available: {}\n- WebSocket frames available: {}\n\n### Finding Snapshot\n{}\n\n### Safety Governor\n- Passive/local data was inspected.\n- Actions that send traffic or modify targets are not executed automatically.\n- If the plan requires active scanning, Repeater sends, Intruder runs, or WebSocket replay, use the dedicated tab approval flow.\n",
+            if selected_agents.is_empty() { "- No custom agent selected by router" } else { selected_agents.as_str() },
+            if steps.is_empty() { "- No executable steps returned; plan kept as guidance" } else { steps.as_str() },
+            selected_flow_md,
+            self.findings.len(),
+            websockets.len(),
+            if top_findings.is_empty() { "- No findings loaded" } else { top_findings.as_str() },
+        )
     }
 
     fn explain_selected_flow(&mut self) {
@@ -1757,6 +2134,22 @@ impl App {
         self.ai_panel.input.clear();
         self.ai_panel.messages.push(AiMessage::user(prompt.clone()));
         self.ai_panel.is_waiting = true;
+
+        if self.ai_prompt_mode == AiPromptMode::Agent {
+            self.ai_agent_plan_state = Some(AiAgentPlanState::Planning);
+            self.ai_panel.status = format!("planning agent workflow with {}", self.ai_panel.settings.model);
+            self.project_message = "Agent mode: building execution plan".to_string();
+            let settings = self.ai_panel.settings.clone();
+            let agents = self.ai_agent_options();
+            let app_context = self.agent_context_summary();
+            let tx = self.ai_tx.clone();
+            tokio::spawn(async move {
+                let result = plan_ai_agents_with_ollama(settings, prompt, agents, app_context).await;
+                let _ = tx.send(AiEvent::AgentPlanComplete { result }).await;
+            });
+            return;
+        }
+
         self.ai_panel.status = format!("asking {}", self.ai_panel.settings.model);
         self.project_message = format!("AI prompt submitted to {}", self.ai_panel.settings.model);
 
@@ -3243,7 +3636,17 @@ impl App {
 
         match self.current_tab {
             Tab::Ai => {
-                if self.ai_skill_page_open && self.ai_skill_modal_open {
+                if self.ai_agent_page_open && self.ai_agent_modal_open {
+                    match self.ai_agent_modal_field {
+                        AiAgentModalField::Title => self.ai_agent_modal_title.push_str(text.trim()),
+                        AiAgentModalField::Body => self.ai_agent_modal_body.push_str(&text.replace("\r\n", "\n")),
+                        AiAgentModalField::Format => {}
+                    }
+                } else if self.ai_agent_page_open && self.ai_agent_editor_focused {
+                    if let Some(agent) = self.ai_custom_agents.get_mut(self.ai_selected_agent) {
+                        agent.body.push_str(&text.replace("\r\n", "\n"));
+                    }
+                } else if self.ai_skill_page_open && self.ai_skill_modal_open {
                     match self.ai_skill_modal_field {
                         AiSkillModalField::Title => self.ai_skill_modal_title.push_str(text.trim()),
                         AiSkillModalField::Body => self.ai_skill_modal_body.push_str(&text.replace("\r\n", "\n")),
@@ -3316,6 +3719,11 @@ impl App {
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         match self.current_tab {
+            Tab::Ai => match mouse.kind {
+                MouseEventKind::ScrollDown => self.ai_conversation_scroll = self.ai_conversation_scroll.saturating_add(3),
+                MouseEventKind::ScrollUp => self.ai_conversation_scroll = self.ai_conversation_scroll.saturating_sub(3),
+                _ => {}
+            },
             Tab::Proxy => match mouse.kind {
                 MouseEventKind::ScrollDown => {
                     self.request_scroll = self.request_scroll.saturating_add(1);
@@ -4141,6 +4549,26 @@ fn resolve_project_path(current_path: &std::path::Path, input: &str) -> std::pat
     }
 }
 
+fn default_ai_agents() -> Vec<CustomAiAgent> {
+    vec![
+        CustomAiAgent {
+            title: "WebSocket Auditor".to_string(),
+            format: AiSkillFormat::Markdown,
+            body: "# WebSocket Auditor\n\nPurpose: Analyze captured WebSocket frames for auth, IDOR, sensitive data, and state-changing events.\n\nAllowed tools:\n- websocket.read_frames\n- websocket.group_events\n- comparer.diff\n- ai.summarize\n\nForbidden:\n- websocket.send\n- active_scan.run\n\nOutput: Summary, evidence, risk signals, safe next steps.".to_string(),
+        },
+        CustomAiAgent {
+            title: "Passive App Analyst".to_string(),
+            format: AiSkillFormat::Markdown,
+            body: "# Passive App Analyst\n\nPurpose: Use local proxy flows, scanner findings, decoder/comparer context, and websocket captures to prepare passive security analysis.\n\nAllowed tools:\n- proxy.selected_flow\n- scanner.findings\n- websocket.read_frames\n- comparer.summary\n- decoder.agent_decode\n\nSafety: Passive-only by default.".to_string(),
+        },
+        CustomAiAgent {
+            title: "Report Writer".to_string(),
+            format: AiSkillFormat::Markdown,
+            body: "# Report Writer\n\nPurpose: Turn evidence and agent outputs into concise report-ready Markdown with impact, evidence, confidence, and remediation.\n\nAllowed tools:\n- ai.summarize\n- scanner.findings\n- comparer.summary".to_string(),
+        },
+    ]
+}
+
 fn configured_ai_model_presets() -> Vec<String> {
     let mut models = Vec::new();
     for var in ["PROXIMA_AI_MODEL_PRESETS", "PROXIMA_CLOUD_AI_MODELS", "PROXIMA_AI_MODELS"] {
@@ -4188,6 +4616,64 @@ async fn fetch_ollama_models(settings: crate::models::ai::AiSettings) -> Result<
     models.sort();
     models.dedup();
     Ok(models)
+}
+
+async fn plan_ai_agents_with_ollama(
+    settings: crate::models::ai::AiSettings,
+    prompt: String,
+    agents: Vec<(String, AiSkillFormat, String)>,
+    app_context: String,
+) -> Result<AiAgentPlan, String> {
+    let agent_catalog = agents
+        .iter()
+        .map(|(name, format, body)| format!("Agent: {name}\nFormat: {}\nDefinition:\n{body}", format.label()))
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+    let messages = vec![
+        OllamaMessage {
+            role: "system".to_string(),
+            content: ai_agent_router_system_prompt(),
+        },
+        OllamaMessage {
+            role: "user".to_string(),
+            content: format!(
+                "User request:\n{}\n\nAvailable custom agents:\n{}\n\n{}",
+                prompt,
+                if agent_catalog.trim().is_empty() { "<none>" } else { &agent_catalog },
+                app_context
+            ),
+        },
+    ];
+
+    let request = OllamaChatRequest {
+        model: settings.model,
+        stream: false,
+        messages,
+        options: OllamaOptions {
+            temperature: settings.temperature,
+        },
+    };
+    let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("ollama returned {status}: {body}"));
+    }
+    let response: OllamaChatResponse = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    let content = response
+        .message
+        .map(|message| message.content)
+        .ok_or_else(|| "ollama response did not include a message".to_string())?;
+    Ok(normalize_agent_plan(parse_agent_plan(&content), &prompt))
 }
 
 async fn ask_ollama(
@@ -4908,6 +5394,63 @@ async fn suggest_decoder_chain_with_ollama(
         .map(|message| message.content)
         .ok_or_else(|| "ollama response did not include a message".to_string())?;
     Ok(normalize_decoder_chain_suggestion(parse_decoder_chain_suggestion(&content)))
+}
+
+fn parse_agent_plan(content: &str) -> AiAgentPlan {
+    if let Ok(plan) = serde_json::from_str::<AiAgentPlan>(content) {
+        return plan;
+    }
+
+    if let Some(json) = extract_json_object(content) {
+        if let Ok(plan) = serde_json::from_str::<AiAgentPlan>(json) {
+            return plan;
+        }
+    }
+
+    AiAgentPlan {
+        requires_confirmation: true,
+        risk_level: "unknown".to_string(),
+        plan_markdown: content.trim().to_string(),
+        raw_text: Some(content.trim().to_string()),
+        ..AiAgentPlan::default()
+    }
+}
+
+fn normalize_agent_plan(mut plan: AiAgentPlan, prompt: &str) -> AiAgentPlan {
+    if plan.risk_level.trim().is_empty() {
+        plan.risk_level = "passive".to_string();
+    }
+    if plan.plan_markdown.trim().is_empty() {
+        let agents = plan
+            .selected_agents
+            .iter()
+            .map(|agent| format!("- **{}** — {}", agent.name, agent.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let steps = plan
+            .steps
+            .iter()
+            .map(|step| format!("{}. **{} tab** — {} using `{}`", step.order, step.tab, step.feature, step.tool))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let safety = plan
+            .safety_notes
+            .iter()
+            .map(|note| format!("- {note}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        plan.plan_markdown = format!(
+            "## Agent Execution Plan\n\n**User request:** {prompt}\n\n### Selected Agents\n{}\n\n### Workflow\n{}\n\n### Safety\n{}\n",
+            if agents.is_empty() { "- No specific custom agent selected" } else { agents.as_str() },
+            if steps.is_empty() { "1. AI tab — summarize available context" } else { steps.as_str() },
+            if safety.is_empty() { "- Review before execution\n- No traffic will be sent unless explicitly approved" } else { safety.as_str() },
+        );
+    }
+    if !plan.plan_markdown.contains("[a]") && !plan.plan_markdown.contains("Accept") {
+        plan.plan_markdown.push_str("\n\n---\n\n[a] Accept   [d] Decline\n");
+    }
+    plan.requires_confirmation = true;
+    plan
 }
 
 fn parse_flow_explanation(content: &str) -> FlowExplanation {
@@ -5985,6 +6528,37 @@ fn priority_from_label(label: &str) -> &'static str {
         4 => "P4",
         _ => "P4",
     }
+}
+
+fn ai_agent_router_system_prompt() -> String {
+    r#"You are Proxima Agent Router and execution planner for an authorized web security TUI.
+Return ONLY valid JSON. Do not use markdown fences or prose outside JSON.
+Select relevant user-created agents automatically. Build a transparent execution plan using the app's tabs/features as tools. Do not execute active traffic yourself. Any step that sends traffic, modifies targets, starts Intruder, starts Active scan, or replays WebSocket messages must be marked as requiring confirmation / high risk. Prefer passive/local analysis first.
+
+Supported tab/tool families include:
+- AI: summarize, render markdown, explain evidence
+- Proxy: selected flow, traffic list, flow summary
+- Repeater: create draft only unless explicit approval
+- Scope: check URL, propose rules
+- Intruder: plan attack, generate payloads; running attack requires approval
+- Decoder: detect chain, agent decode
+- Comparer: compare text, AI summary
+- Scanner: list findings, triage, generate passive rules
+- Active: enqueue/run safe scan only with explicit approval
+- WebSockets: read frames, group events, detect sensitive fields, compare similar messages
+
+Required JSON shape:
+{
+  "selected_agents": [{"name": "WebSocket Auditor", "reason": "Prompt asks about websocket auth"}],
+  "requires_confirmation": true,
+  "risk_level": "passive|local_modify|sends_traffic|blocked",
+  "plan_markdown": "## Agent Execution Plan\n...\n[a] Accept   [d] Decline",
+  "steps": [
+    {"order": 1, "tab": "WebSockets", "feature": "Read captured frames", "tool": "websocket.read_frames", "agent": "WebSocket Auditor", "risk": "passive"}
+  ],
+  "safety_notes": ["Passive-only unless explicitly approved"]
+}"#
+        .to_string()
 }
 
 fn ai_system_prompt() -> String {
