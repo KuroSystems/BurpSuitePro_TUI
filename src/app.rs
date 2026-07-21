@@ -504,6 +504,7 @@ impl App {
         let intruder_results = database.load_intruder_results().unwrap_or_default();
         let findings = database.load_findings().unwrap_or_default();
         let project_message = format!("Project: {}", database.path().display());
+        let brain_markdown = load_brain_for_project(database.path());
         Self {
             current_tab: Tab::Ai,
             should_quit: false,
@@ -538,7 +539,7 @@ impl App {
             project_panel_mode: ProjectPanelMode::Closed,
             project_panel_selected: 0,
             project_panel_input: String::new(),
-            brain_markdown: load_brain_for_project(database.path()),
+            brain_markdown,
             brain_dirty: false,
             brain_message: "Brain loaded".to_string(),
             brain_search: String::new(),
