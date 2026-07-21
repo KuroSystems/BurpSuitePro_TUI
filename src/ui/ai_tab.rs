@@ -2,12 +2,12 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
 use crate::{
-    app::App,
+    app::{AiSkillFormat, AiSkillModalField, App},
     models::ai::{AiRole, QUICK_PROMPTS},
 };
 
@@ -141,7 +141,7 @@ fn render_skill_page(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
     let title = Line::from(vec![
         Span::styled(" Proxima Skill Page ", Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)),
-        Span::raw(" hidden page • F2/Esc close • Tab focus • Ctrl+Enter apply/close"),
+        Span::raw(" hidden page • n new skill • F2/Esc close • Tab focus • Ctrl+Enter apply/close"),
     ]);
     frame.render_widget(Paragraph::new(title).block(Block::default().borders(Borders::ALL)), layout[0]);
 
@@ -153,14 +153,19 @@ fn render_skill_page(frame: &mut Frame, app: &App, area: Rect) {
     render_skill_editor(frame, app, body[1]);
 
     let footer = Line::from(vec![
+        Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Green)),
+        Span::raw(" new skill  "),
         Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw(" select skill  "),
+        Span::raw(" select  "),
         Span::styled(" Tab ", Style::default().fg(Color::Black).bg(Color::Yellow)),
         Span::raw(" list/editor  "),
-        Span::styled(" Custom Markdown ", Style::default().fg(Color::Black).bg(Color::Magenta)),
-        Span::raw(" is injected into the next AI prompts when selected"),
+        Span::styled(" JSON/Markdown auto-detected ", Style::default().fg(Color::Black).bg(Color::Magenta)),
     ]);
     frame.render_widget(Paragraph::new(footer).block(Block::default().borders(Borders::ALL)), layout[2]);
+
+    if app.ai_skill_modal_open {
+        render_skill_modal(frame, app, area);
+    }
 }
 
 fn render_skill_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -168,8 +173,12 @@ fn render_skill_list(frame: &mut Frame, app: &App, area: Rect) {
     let items = skills
         .iter()
         .enumerate()
-        .map(|(index, (name, body))| {
-            let mut lines = vec![Line::styled(name.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))];
+        .map(|(index, (name, format, body, custom))| {
+            let mut lines = vec![Line::from(vec![
+                Span::styled(name.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
+                Span::styled(format.label(), Style::default().fg(if *custom { Color::Magenta } else { Color::DarkGray })),
+            ])];
             lines.push(Line::styled(body.lines().next().unwrap_or("No skill text").chars().take(80).collect::<String>(), Style::default().fg(Color::DarkGray)));
             if index + 1 < skills.len() {
                 lines.push(Line::raw(""));
@@ -190,35 +199,107 @@ fn render_skill_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_skill_editor(frame: &mut Frame, app: &App, area: Rect) {
-    let selected_skill = app.active_ai_skill();
-    let preview = selected_skill
-        .map(|(name, body)| format!("# Active Skill: {name}\n\n{body}"))
-        .unwrap_or_else(|| "No active skill".to_string());
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(area);
-    frame.render_widget(
-        Paragraph::new(render_markdown_lines(&preview))
-            .block(Block::default().title(" Active Skill Preview ").borders(Borders::ALL))
-            .wrap(Wrap { trim: true }),
-        chunks[0],
-    );
-    let editor_lines = if app.ai_custom_skill.is_empty() {
-        vec![
-            Line::styled("Write custom skill instructions here in Markdown.", Style::default().fg(Color::DarkGray)),
-            Line::styled("Example: # Bug bounty reporter\nAlways answer with Impact, Evidence, Repro Steps, Remediation.", Style::default().fg(Color::DarkGray)),
-        ]
+    let (name, format, body, custom) = app
+        .selected_ai_skill_tuple()
+        .unwrap_or_else(|| ("No Skill".to_string(), AiSkillFormat::Markdown, String::new(), false));
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("# {name}"), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(format.label(), Style::default().fg(Color::Magenta)),
+        Span::raw(if custom { "  editable" } else { "  built-in/read-only" }),
+    ]), Line::raw("")];
+    if body.trim().is_empty() {
+        lines.push(Line::styled("No instructions yet.", Style::default().fg(Color::DarkGray)));
+    } else if detected_skill_format(&body, format) == AiSkillFormat::Json {
+        lines.extend(render_json_skill_lines(&body));
     } else {
-        app.ai_custom_skill.lines().map(|line| Line::raw(line.to_string())).collect()
-    };
-    let title = if app.ai_skill_editor_focused { " Custom Skill Markdown [focused] " } else { " Custom Skill Markdown " };
+        lines.extend(render_markdown_lines(&body));
+    }
+    let title = if app.ai_skill_editor_focused { " Skill Instructions Editor [focused] " } else { " Skill Instructions Editor " };
     frame.render_widget(
-        Paragraph::new(editor_lines)
+        Paragraph::new(lines)
             .block(Block::default().title(title).borders(Borders::ALL).border_style(if app.ai_skill_editor_focused { Style::default().fg(Color::Magenta) } else { Style::default() }))
             .wrap(Wrap { trim: false }),
-        chunks[1],
+        area,
     );
+}
+
+fn render_skill_modal(frame: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_rect(70, 70, area);
+    frame.render_widget(Clear, popup);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
+        .split(popup);
+    let title_style = if app.ai_skill_modal_field == AiSkillModalField::Title { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default() };
+    let format_style = if app.ai_skill_modal_field == AiSkillModalField::Format { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default() };
+    let body_style = if app.ai_skill_modal_field == AiSkillModalField::Body { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) } else { Style::default() };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled("Skill Title: ", title_style), Span::raw(format!("{}{}", app.ai_skill_modal_title, if app.ai_skill_modal_field == AiSkillModalField::Title { "_" } else { "" }))]))
+            .block(Block::default().title(" New Skill ").borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta))),
+        layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled("Format: ", format_style), Span::styled(app.ai_skill_modal_format.label(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), Span::raw("  (Space/←/→ toggles)")]))
+            .block(Block::default().borders(Borders::ALL)),
+        layout[1],
+    );
+    let body_lines = if app.ai_skill_modal_body.is_empty() {
+        vec![Line::styled("Write JSON or Markdown skill instructions here...", Style::default().fg(Color::DarkGray))]
+    } else {
+        app.ai_skill_modal_body.lines().map(|line| Line::raw(line.to_string())).collect()
+    };
+    frame.render_widget(
+        Paragraph::new(body_lines)
+            .block(Block::default().title(" Instructions / Prompt ").borders(Borders::ALL).border_style(body_style))
+            .wrap(Wrap { trim: false }),
+        layout[2],
+    );
+    frame.render_widget(
+        Paragraph::new("Tab next field • Ctrl+Enter save • Enter saves outside body / newline in body • Esc cancel")
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL)),
+        layout[3],
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn detected_skill_format(body: &str, fallback: AiSkillFormat) -> AiSkillFormat {
+    if serde_json::from_str::<serde_json::Value>(body).is_ok() {
+        AiSkillFormat::Json
+    } else {
+        fallback
+    }
+}
+
+fn render_json_skill_lines(body: &str) -> Vec<Line<'static>> {
+    match serde_json::from_str::<serde_json::Value>(body)
+        .and_then(|value| serde_json::to_string_pretty(&value))
+    {
+        Ok(pretty) => pretty.lines().map(render_code_line).collect(),
+        Err(error) => vec![
+            Line::styled(format!("Invalid JSON: {error}"), Style::default().fg(Color::Red)),
+            Line::raw(body.to_string()),
+        ],
+    }
 }
 
 fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {

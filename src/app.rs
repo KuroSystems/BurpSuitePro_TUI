@@ -257,7 +257,12 @@ pub struct App {
     pub ai_skill_page_open: bool,
     pub ai_skill_editor_focused: bool,
     pub ai_selected_skill: usize,
-    pub ai_custom_skill: String,
+    pub ai_custom_skills: Vec<CustomAiSkill>,
+    pub ai_skill_modal_open: bool,
+    pub ai_skill_modal_field: AiSkillModalField,
+    pub ai_skill_modal_title: String,
+    pub ai_skill_modal_format: AiSkillFormat,
+    pub ai_skill_modal_body: String,
     pub flow_ai_explanations: HashMap<u64, FlowExplanationState>,
     pub finding_triage: HashMap<i64, FindingTriageState>,
     pub ollama_models: Vec<String>,
@@ -285,6 +290,42 @@ pub enum ScopeInputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectInputMode {
     Rename,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiSkillFormat {
+    Markdown,
+    Json,
+}
+
+impl AiSkillFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => "Markdown",
+            Self::Json => "JSON",
+        }
+    }
+
+    fn toggle(self) -> Self {
+        match self {
+            Self::Markdown => Self::Json,
+            Self::Json => Self::Markdown,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CustomAiSkill {
+    pub title: String,
+    pub format: AiSkillFormat,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiSkillModalField {
+    Title,
+    Format,
+    Body,
 }
 
 impl App {
@@ -412,7 +453,12 @@ impl App {
             ai_skill_page_open: false,
             ai_skill_editor_focused: false,
             ai_selected_skill: 0,
-            ai_custom_skill: String::new(),
+            ai_custom_skills: Vec::new(),
+            ai_skill_modal_open: false,
+            ai_skill_modal_field: AiSkillModalField::Title,
+            ai_skill_modal_title: String::new(),
+            ai_skill_modal_format: AiSkillFormat::Markdown,
+            ai_skill_modal_body: String::new(),
             flow_ai_explanations: HashMap::new(),
             finding_triage: HashMap::new(),
             ollama_models: Vec::new(),
@@ -888,7 +934,14 @@ impl App {
 
     fn active_editable_text(&self) -> Option<String> {
         match self.current_tab {
-            Tab::Ai if self.ai_skill_page_open && self.ai_skill_editor_focused => Some(self.ai_custom_skill.clone()),
+            Tab::Ai if self.ai_skill_page_open && self.ai_skill_modal_open => Some(match self.ai_skill_modal_field {
+                AiSkillModalField::Title => self.ai_skill_modal_title.clone(),
+                AiSkillModalField::Format => self.ai_skill_modal_format.label().to_string(),
+                AiSkillModalField::Body => self.ai_skill_modal_body.clone(),
+            }),
+            Tab::Ai if self.ai_skill_page_open && self.ai_skill_editor_focused => self
+                .selected_custom_skill_index()
+                .and_then(|index| self.ai_custom_skills.get(index).map(|skill| skill.body.clone())),
             Tab::Ai => Some(self.ai_panel.input.clone()),
             Tab::Repeater => {
                 if self.renaming_repeater {
@@ -1131,34 +1184,60 @@ impl App {
         }
     }
 
-    pub fn ai_skill_options(&self) -> Vec<(String, String)> {
+    pub fn ai_skill_options(&self) -> Vec<(String, AiSkillFormat, String, bool)> {
         let mut skills = vec![
             (
                 "General Analyst".to_string(),
+                AiSkillFormat::Markdown,
                 "Answer as a concise, careful web security analyst. Separate evidence, uncertainty, and next steps.".to_string(),
+                false,
             ),
             (
                 "Exploit Triage".to_string(),
+                AiSkillFormat::Markdown,
                 "Prioritize real risk, false positives, exploitability, proof, remediation, and report-ready impact.".to_string(),
+                false,
             ),
             (
                 "Payload Builder".to_string(),
+                AiSkillFormat::Markdown,
                 "Suggest safe, non-destructive payload ideas and explain how to validate them manually within scope.".to_string(),
+                false,
             ),
             (
                 "Report Writer".to_string(),
+                AiSkillFormat::Markdown,
                 "Write polished report-ready security notes with impact, evidence, severity rationale, and remediation.".to_string(),
+                false,
             ),
         ];
-        if !self.ai_custom_skill.trim().is_empty() {
-            skills.push(("Custom Skill".to_string(), self.ai_custom_skill.clone()));
-        }
+        skills.extend(self.ai_custom_skills.iter().map(|skill| {
+            (skill.title.clone(), skill.format, skill.body.clone(), true)
+        }));
         skills
     }
 
     pub fn active_ai_skill(&self) -> Option<(String, String)> {
         let skills = self.ai_skill_options();
+        skills
+            .get(self.ai_selected_skill.min(skills.len().saturating_sub(1)))
+            .map(|(name, format, body, _)| {
+                let formatted = match format {
+                    AiSkillFormat::Markdown => format!("Format: Markdown\n{body}"),
+                    AiSkillFormat::Json => format!("Format: JSON\n{body}"),
+                };
+                (name.clone(), formatted)
+            })
+    }
+
+    pub fn selected_ai_skill_tuple(&self) -> Option<(String, AiSkillFormat, String, bool)> {
+        let skills = self.ai_skill_options();
         skills.get(self.ai_selected_skill.min(skills.len().saturating_sub(1))).cloned()
+    }
+
+    fn selected_custom_skill_index(&self) -> Option<usize> {
+        let builtins = 4;
+        (self.ai_selected_skill >= builtins).then_some(self.ai_selected_skill - builtins)
     }
 
     fn select_next_ai_skill(&mut self) {
@@ -1168,6 +1247,42 @@ impl App {
 
     fn select_previous_ai_skill(&mut self) {
         self.ai_selected_skill = self.ai_selected_skill.saturating_sub(1);
+    }
+
+    fn open_ai_skill_modal(&mut self) {
+        self.ai_skill_modal_open = true;
+        self.ai_skill_modal_field = AiSkillModalField::Title;
+        self.ai_skill_modal_title.clear();
+        self.ai_skill_modal_format = AiSkillFormat::Markdown;
+        self.ai_skill_modal_body.clear();
+    }
+
+    fn save_ai_skill_modal(&mut self) {
+        let title = if self.ai_skill_modal_title.trim().is_empty() {
+            format!("Custom Skill {}", self.ai_custom_skills.len() + 1)
+        } else {
+            self.ai_skill_modal_title.trim().to_string()
+        };
+        let body = self.ai_skill_modal_body.trim().to_string();
+        if body.is_empty() {
+            self.project_message = "Skill body cannot be empty".to_string();
+            return;
+        }
+        self.ai_custom_skills.push(CustomAiSkill {
+            title: title.clone(),
+            format: self.ai_skill_modal_format,
+            body,
+        });
+        self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+        self.ai_skill_modal_open = false;
+        self.ai_skill_editor_focused = true;
+        self.project_message = format!("Saved AI skill: {title}");
+    }
+
+    fn cancel_ai_skill_modal(&mut self) {
+        self.ai_skill_modal_open = false;
+        self.ai_skill_modal_title.clear();
+        self.ai_skill_modal_body.clear();
     }
 
     pub fn ai_model_options(&self) -> Vec<String> {
@@ -1474,9 +1589,17 @@ impl App {
     }
 
     fn handle_ai_skill_key(&mut self, key: KeyEvent) -> bool {
+        if self.ai_skill_modal_open {
+            return self.handle_ai_skill_modal_key(key);
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) | (KeyCode::F(2), _) => {
                 self.ai_skill_page_open = false;
+                true
+            }
+            (KeyCode::Char('n'), KeyModifiers::NONE) => {
+                self.open_ai_skill_modal();
                 true
             }
             (KeyCode::Tab, _) => {
@@ -1496,17 +1619,77 @@ impl App {
                 true
             }
             (KeyCode::Backspace, _) if self.ai_skill_editor_focused => {
-                self.ai_custom_skill.pop();
+                if let Some(index) = self.selected_custom_skill_index() {
+                    if let Some(skill) = self.ai_custom_skills.get_mut(index) {
+                        skill.body.pop();
+                    }
+                }
                 true
             }
             (KeyCode::Enter, _) if self.ai_skill_editor_focused => {
-                self.ai_custom_skill.push('\n');
-                self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+                if let Some(index) = self.selected_custom_skill_index() {
+                    if let Some(skill) = self.ai_custom_skills.get_mut(index) {
+                        skill.body.push('\n');
+                    }
+                }
                 true
             }
             (KeyCode::Char(char), KeyModifiers::NONE) | (KeyCode::Char(char), KeyModifiers::SHIFT) if self.ai_skill_editor_focused => {
-                self.ai_custom_skill.push(char);
-                self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+                if let Some(index) = self.selected_custom_skill_index() {
+                    if let Some(skill) = self.ai_custom_skills.get_mut(index) {
+                        skill.body.push(char);
+                    }
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn handle_ai_skill_modal_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
+                self.cancel_ai_skill_modal();
+                true
+            }
+            (KeyCode::Enter, KeyModifiers::CONTROL) => {
+                self.save_ai_skill_modal();
+                true
+            }
+            (KeyCode::Tab, _) => {
+                self.ai_skill_modal_field = match self.ai_skill_modal_field {
+                    AiSkillModalField::Title => AiSkillModalField::Format,
+                    AiSkillModalField::Format => AiSkillModalField::Body,
+                    AiSkillModalField::Body => AiSkillModalField::Title,
+                };
+                true
+            }
+            (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Char(' '), _) if self.ai_skill_modal_field == AiSkillModalField::Format => {
+                self.ai_skill_modal_format = self.ai_skill_modal_format.toggle();
+                true
+            }
+            (KeyCode::Backspace, _) => {
+                match self.ai_skill_modal_field {
+                    AiSkillModalField::Title => { self.ai_skill_modal_title.pop(); }
+                    AiSkillModalField::Body => { self.ai_skill_modal_body.pop(); }
+                    AiSkillModalField::Format => {}
+                }
+                true
+            }
+            (KeyCode::Enter, _) if self.ai_skill_modal_field == AiSkillModalField::Body => {
+                self.ai_skill_modal_body.push('\n');
+                true
+            }
+            (KeyCode::Enter, _) => {
+                self.save_ai_skill_modal();
+                true
+            }
+            (KeyCode::Char(char), KeyModifiers::NONE) | (KeyCode::Char(char), KeyModifiers::SHIFT) => {
+                match self.ai_skill_modal_field {
+                    AiSkillModalField::Title => self.ai_skill_modal_title.push(char),
+                    AiSkillModalField::Body => self.ai_skill_modal_body.push(char),
+                    AiSkillModalField::Format => {}
+                }
                 true
             }
             _ => true,
@@ -3060,9 +3243,18 @@ impl App {
 
         match self.current_tab {
             Tab::Ai => {
-                if self.ai_skill_page_open && self.ai_skill_editor_focused {
-                    self.ai_custom_skill.push_str(&text.replace("\r\n", "\n"));
-                    self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+                if self.ai_skill_page_open && self.ai_skill_modal_open {
+                    match self.ai_skill_modal_field {
+                        AiSkillModalField::Title => self.ai_skill_modal_title.push_str(text.trim()),
+                        AiSkillModalField::Body => self.ai_skill_modal_body.push_str(&text.replace("\r\n", "\n")),
+                        AiSkillModalField::Format => {}
+                    }
+                } else if self.ai_skill_page_open && self.ai_skill_editor_focused {
+                    if let Some(index) = self.selected_custom_skill_index() {
+                        if let Some(skill) = self.ai_custom_skills.get_mut(index) {
+                            skill.body.push_str(&text.replace("\r\n", "\n"));
+                        }
+                    }
                 } else {
                     self.ai_panel.input.push_str(&text);
                 }
