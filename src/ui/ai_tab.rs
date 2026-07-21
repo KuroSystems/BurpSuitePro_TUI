@@ -107,7 +107,7 @@ fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
-    let help = "Ctrl+Enter send  Ctrl+A attach selected flow  Alt+1..6 quick prompts  Left/Right switch tabs";
+    let help = "Enter/Ctrl+Enter send  Alt+Enter newline  Ctrl+A attach flow  Alt+1..6 quick prompts  Left/Right tabs";
     let input = if app.ai_panel.input.is_empty() {
         "Ask about selected flow, finding impact, next safe step, or payload ideas...".to_string()
     } else {

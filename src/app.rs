@@ -1376,11 +1376,19 @@ impl App {
 
     fn handle_ai_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::ALT) => {
+                self.ai_panel.input.push('\n');
+                true
+            }
+            (KeyCode::Enter, _) => {
                 self.submit_ai_prompt();
                 true
             }
-            (KeyCode::Char('\n'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            (KeyCode::Char('\n'), _) => {
+                self.submit_ai_prompt();
+                true
+            }
+            (KeyCode::Char('j') | KeyCode::Char('J'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.submit_ai_prompt();
                 true
             }
@@ -1398,10 +1406,6 @@ impl App {
             }
             (KeyCode::Backspace, _) => {
                 self.ai_panel.input.pop();
-                true
-            }
-            (KeyCode::Enter, _) => {
-                self.ai_panel.input.push('\n');
                 true
             }
             (KeyCode::Char(char), KeyModifiers::NONE) | (KeyCode::Char(char), KeyModifiers::SHIFT) => {
@@ -1474,6 +1478,7 @@ impl App {
         self.ai_panel.messages.push(AiMessage::user(prompt.clone()));
         self.ai_panel.is_waiting = true;
         self.ai_panel.status = format!("asking {}", self.ai_panel.settings.model);
+        self.project_message = format!("AI prompt submitted to {}", self.ai_panel.settings.model);
 
         let settings = self.ai_panel.settings.clone();
         let context = self.ai_panel.attached_context.clone();

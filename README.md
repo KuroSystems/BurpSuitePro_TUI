@@ -20,7 +20,7 @@ Keyboard controls:
 - Scanner tab: passive findings from YAML/JSON definitions; `Enter` jumps to flow, `i/l/m/h/c` filter severity, `1/2/3` filter confidence, `[/]` select check, `e` toggles check, `r` reloads definitions, `x` exports JSON/HTML
 - Active tab: opt-in safe active checks with `e`, add selected in-scope proxy target with `a`, start with `F5`, stop with `F7`
 - WebSockets tab: shows intercepted WebSocket upgrade/frame records; `j/k` navigates
-- AI tab: local Ollama assistant; `Ctrl+A` attaches selected Proxy flow, `Alt+1..6` loads quick prompts, `Ctrl+Enter` sends prompt
+- AI tab: local Ollama assistant; `Ctrl+A` attaches selected Proxy flow, `Alt+1..6` loads quick prompts, `Enter`/`Ctrl+Enter` sends prompt, `Alt+Enter` inserts a newline
 - Plugins tab: loads WASM plugins from `~/.proxima/plugins` or `PROXIMA_PLUGIN_DIR`; `r` reloads, `e`/`Space` toggles, `j/k` navigates
 - Settings tab: `s` starts the local proxy, `x` stops it, `Ctrl+S` saves, `Ctrl+O` opens
 - `Ctrl+C`, `Esc`, or `q`: quit cleanly
