@@ -1724,11 +1724,17 @@ impl App {
         match (key.code, key.modifiers) {
             (KeyCode::F(2), _) => {
                 self.ai_skill_page_open = true;
+                self.ai_agent_page_open = false;
                 self.ai_skill_editor_focused = false;
                 true
             },
-            (KeyCode::F(3), _) => {
+            (KeyCode::F(3), _)
+            | (KeyCode::Char('g'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('G'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('g'), KeyModifiers::ALT)
+            | (KeyCode::Char('G'), KeyModifiers::ALT) => {
                 self.ai_agent_page_open = true;
+                self.ai_skill_page_open = false;
                 self.ai_agent_editor_focused = false;
                 true
             },
@@ -1795,6 +1801,16 @@ impl App {
                 self.ai_skill_page_open = false;
                 true
             }
+            (KeyCode::F(3), _)
+            | (KeyCode::Char('g'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('G'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('g'), KeyModifiers::ALT)
+            | (KeyCode::Char('G'), KeyModifiers::ALT) => {
+                self.ai_skill_page_open = false;
+                self.ai_agent_page_open = true;
+                self.ai_agent_editor_focused = false;
+                true
+            }
             (KeyCode::Char('n'), KeyModifiers::NONE) => {
                 self.open_ai_skill_modal();
                 true
@@ -1850,6 +1866,12 @@ impl App {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) | (KeyCode::F(3), _) => {
                 self.ai_agent_page_open = false;
+                true
+            }
+            (KeyCode::F(2), _) => {
+                self.ai_agent_page_open = false;
+                self.ai_skill_page_open = true;
+                self.ai_skill_editor_focused = false;
                 true
             }
             (KeyCode::Char('n'), KeyModifiers::NONE) => {

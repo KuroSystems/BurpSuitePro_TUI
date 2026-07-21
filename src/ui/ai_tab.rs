@@ -109,8 +109,12 @@ fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::raw(""));
     }
-    if app.ai_panel.is_waiting && app.ai_prompt_mode == AiPromptMode::Agent {
-        push_agent_planning_animation(&mut lines, app.tick_count);
+    if app.ai_panel.is_waiting {
+        if app.ai_prompt_mode == AiPromptMode::Agent {
+            push_agent_planning_animation(&mut lines, app.tick_count);
+        } else {
+            push_skill_processing_animation(&mut lines, app);
+        }
     }
     if matches!(app.ai_agent_plan_state, Some(AiAgentPlanState::AwaitingApproval(_))) {
         lines.push(Line::raw(""));
@@ -130,11 +134,29 @@ fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, tick: u64) {
+fn push_skill_processing_animation(lines: &mut Vec<Line<'static>>, app: &App) {
+    let tick = app.tick_count;
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(tick as usize) % 10];
-    let stages = ["Routing request", "Scoring custom agents", "Mapping app tools", "Checking safety gates", "Building execution plan"];
+    let stages = [
+        "Reading prompt",
+        "Loading selected skill",
+        "Checking attached context",
+        "Separating evidence from assumptions",
+        "Drafting structured answer",
+        "Rendering Markdown",
+    ];
     let current = ((tick / 6) as usize) % stages.len();
-    lines.push(Line::styled("Agent Mode", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+    let skill_name = app
+        .active_ai_skill()
+        .map(|(name, _)| name)
+        .unwrap_or_else(|| "General Analyst".to_string());
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("✦ Skill Mode", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+    lines.push(Line::from(vec![
+        Span::styled("Skill: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(skill_name, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::styled(progress_rail(current + 1, stages.len()), Style::default().fg(Color::Cyan)));
     for (index, stage) in stages.iter().enumerate() {
         if index < current {
             lines.push(Line::styled(format!("✓ {stage}"), Style::default().fg(Color::Green)));
@@ -146,8 +168,33 @@ fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, tick: u64) {
     }
 }
 
+fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, tick: u64) {
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(tick as usize) % 10];
+    let stages = ["Routing request", "Scoring custom agents", "Mapping app tools", "Checking safety gates", "Building execution plan"];
+    let current = ((tick / 6) as usize) % stages.len();
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("◈ Agent Mode", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+    lines.push(Line::styled("Tools: [Proxy] [Scanner] [WebSockets] [Repeater] [AI Report]", Style::default().fg(Color::Cyan)));
+    lines.push(Line::styled(progress_rail(current + 1, stages.len()), Style::default().fg(Color::Magenta)));
+    for (index, stage) in stages.iter().enumerate() {
+        if index < current {
+            lines.push(Line::styled(format!("✓ {stage}"), Style::default().fg(Color::Green)));
+        } else if index == current {
+            lines.push(Line::styled(format!("{spinner} {stage}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        } else {
+            lines.push(Line::styled(format!("• {stage}"), Style::default().fg(Color::DarkGray)));
+        }
+    }
+}
+
+fn progress_rail(done: usize, total: usize) -> String {
+    let width = 12;
+    let filled = ((done * width) / total.max(1)).min(width);
+    format!("[{}{}] {}/{}", "█".repeat(filled), "░".repeat(width - filled), done.min(total), total)
+}
+
 fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
-    let help = "Enter send  Tab Skill/Agent  F2 Skills  F3 Agents  PageUp/PageDown scroll  Ctrl+A attach flow";
+    let help = "Enter send  Tab Skill/Agent  F2 Skills  F3/Ctrl+G Agents  PageUp/PageDown scroll  Ctrl+A attach flow";
     let input = if app.ai_panel.input.is_empty() {
         "Ask about selected flow, finding impact, next safe step, or payload ideas...".to_string()
     } else {
@@ -159,7 +206,7 @@ fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("  "),
             Span::styled(" Skills:F2 ", Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
-            Span::styled(" Agents:F3 ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(" Agents:F3/Ctrl+G ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(help, Style::default().fg(Color::DarkGray)),
         ]),
