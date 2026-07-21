@@ -169,10 +169,12 @@ where
         .with_no_client_auth()
         .with_single_cert(issued.cert_chain, issued.private_key)
         .wrap_err("failed to build per-domain TLS config")?;
-    // Advertise both HTTP/2 and HTTP/1.1 to clients. The current request
-    // dispatcher is still conservative and accepts HTTP/1.1 upgrades, while
-    // reqwest preserves upstream HTTP/2 support when the origin negotiates it.
-    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // Only advertise HTTP/1.1 to the browser for now. Advertising h2 makes
+    // modern browsers negotiate HTTP/2, but this MITM listener currently serves
+    // the decrypted client side with Hyper's HTTP/1.1 server. That protocol
+    // mismatch causes TLS tunnels to reset after the CA is trusted.
+    // The upstream leg can still negotiate HTTP/2 through reqwest independently.
+    tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
     let tls_stream = acceptor
         .accept(TokioIo::new(upgraded))
