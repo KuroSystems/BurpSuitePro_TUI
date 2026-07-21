@@ -254,6 +254,10 @@ pub struct App {
     pub plugin_manager: PluginManager,
     pub selected_plugin: usize,
     pub ai_panel: AiPanelState,
+    pub ai_skill_page_open: bool,
+    pub ai_skill_editor_focused: bool,
+    pub ai_selected_skill: usize,
+    pub ai_custom_skill: String,
     pub flow_ai_explanations: HashMap<u64, FlowExplanationState>,
     pub finding_triage: HashMap<i64, FindingTriageState>,
     pub ollama_models: Vec<String>,
@@ -405,6 +409,10 @@ impl App {
             plugin_manager: PluginManager::load_default(),
             selected_plugin: 0,
             ai_panel: AiPanelState::default(),
+            ai_skill_page_open: false,
+            ai_skill_editor_focused: false,
+            ai_selected_skill: 0,
+            ai_custom_skill: String::new(),
             flow_ai_explanations: HashMap::new(),
             finding_triage: HashMap::new(),
             ollama_models: Vec::new(),
@@ -880,6 +888,7 @@ impl App {
 
     fn active_editable_text(&self) -> Option<String> {
         match self.current_tab {
+            Tab::Ai if self.ai_skill_page_open && self.ai_skill_editor_focused => Some(self.ai_custom_skill.clone()),
             Tab::Ai => Some(self.ai_panel.input.clone()),
             Tab::Repeater => {
                 if self.renaming_repeater {
@@ -1120,6 +1129,45 @@ impl App {
                 self.proxy_message = format!("Invalid listen address/port '{input}': {error}");
             }
         }
+    }
+
+    pub fn ai_skill_options(&self) -> Vec<(String, String)> {
+        let mut skills = vec![
+            (
+                "General Analyst".to_string(),
+                "Answer as a concise, careful web security analyst. Separate evidence, uncertainty, and next steps.".to_string(),
+            ),
+            (
+                "Exploit Triage".to_string(),
+                "Prioritize real risk, false positives, exploitability, proof, remediation, and report-ready impact.".to_string(),
+            ),
+            (
+                "Payload Builder".to_string(),
+                "Suggest safe, non-destructive payload ideas and explain how to validate them manually within scope.".to_string(),
+            ),
+            (
+                "Report Writer".to_string(),
+                "Write polished report-ready security notes with impact, evidence, severity rationale, and remediation.".to_string(),
+            ),
+        ];
+        if !self.ai_custom_skill.trim().is_empty() {
+            skills.push(("Custom Skill".to_string(), self.ai_custom_skill.clone()));
+        }
+        skills
+    }
+
+    pub fn active_ai_skill(&self) -> Option<(String, String)> {
+        let skills = self.ai_skill_options();
+        skills.get(self.ai_selected_skill.min(skills.len().saturating_sub(1))).cloned()
+    }
+
+    fn select_next_ai_skill(&mut self) {
+        let count = self.ai_skill_options().len().max(1);
+        self.ai_selected_skill = (self.ai_selected_skill + 1).min(count.saturating_sub(1));
+    }
+
+    fn select_previous_ai_skill(&mut self) {
+        self.ai_selected_skill = self.ai_selected_skill.saturating_sub(1);
     }
 
     pub fn ai_model_options(&self) -> Vec<String> {
@@ -1375,7 +1423,16 @@ impl App {
     }
 
     fn handle_ai_key(&mut self, key: KeyEvent) -> bool {
+        if self.ai_skill_page_open {
+            return self.handle_ai_skill_key(key);
+        }
+
         match (key.code, key.modifiers) {
+            (KeyCode::F(2), _) => {
+                self.ai_skill_page_open = true;
+                self.ai_skill_editor_focused = false;
+                true
+            },
             (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::ALT) => {
                 self.ai_panel.input.push('\n');
                 true
@@ -1413,6 +1470,46 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    fn handle_ai_skill_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) | (KeyCode::F(2), _) => {
+                self.ai_skill_page_open = false;
+                true
+            }
+            (KeyCode::Tab, _) => {
+                self.ai_skill_editor_focused = !self.ai_skill_editor_focused;
+                true
+            }
+            (KeyCode::Enter, KeyModifiers::CONTROL) => {
+                self.ai_skill_page_open = false;
+                true
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) if !self.ai_skill_editor_focused => {
+                self.select_next_ai_skill();
+                true
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) if !self.ai_skill_editor_focused => {
+                self.select_previous_ai_skill();
+                true
+            }
+            (KeyCode::Backspace, _) if self.ai_skill_editor_focused => {
+                self.ai_custom_skill.pop();
+                true
+            }
+            (KeyCode::Enter, _) if self.ai_skill_editor_focused => {
+                self.ai_custom_skill.push('\n');
+                self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+                true
+            }
+            (KeyCode::Char(char), KeyModifiers::NONE) | (KeyCode::Char(char), KeyModifiers::SHIFT) if self.ai_skill_editor_focused => {
+                self.ai_custom_skill.push(char);
+                self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+                true
+            }
+            _ => true,
         }
     }
 
@@ -1483,9 +1580,10 @@ impl App {
         let settings = self.ai_panel.settings.clone();
         let context = self.ai_panel.attached_context.clone();
         let history = self.ai_panel.messages.clone();
+        let skill = self.active_ai_skill();
         let tx = self.ai_tx.clone();
         tokio::spawn(async move {
-            let result = ask_ollama(settings, context, history, prompt).await;
+            let result = ask_ollama(settings, context, history, prompt, skill).await;
             let _ = tx.send(AiEvent::Complete(result)).await;
         });
     }
@@ -2962,7 +3060,12 @@ impl App {
 
         match self.current_tab {
             Tab::Ai => {
-                self.ai_panel.input.push_str(&text);
+                if self.ai_skill_page_open && self.ai_skill_editor_focused {
+                    self.ai_custom_skill.push_str(&text.replace("\r\n", "\n"));
+                    self.ai_selected_skill = self.ai_skill_options().len().saturating_sub(1);
+                } else {
+                    self.ai_panel.input.push_str(&text);
+                }
             }
             Tab::Repeater => {
                 if self.renaming_repeater {
@@ -3900,11 +4003,19 @@ async fn ask_ollama(
     context: Option<AiContext>,
     history: Vec<AiMessage>,
     prompt: String,
+    skill: Option<(String, String)>,
 ) -> Result<String, String> {
     let mut messages = vec![OllamaMessage {
         role: "system".to_string(),
         content: ai_system_prompt(),
     }];
+
+    if let Some((name, body)) = skill {
+        messages.push(OllamaMessage {
+            role: "system".to_string(),
+            content: format!("Active Proxima skill: {name}\nSkill instructions in Markdown:\n{body}\nUse this skill to shape the answer, but keep evidence and uncertainty clear."),
+        });
+    }
 
     if let Some(context) = context {
         messages.push(OllamaMessage {
