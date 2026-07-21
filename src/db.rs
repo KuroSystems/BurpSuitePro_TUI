@@ -136,6 +136,12 @@ impl Database {
         Ok(flow.id as i64)
     }
 
+    pub fn delete_flow(&self, flow_id: u64) -> Result<()> {
+        self.connection.execute("DELETE FROM flows WHERE id = ?1", params![flow_id as i64])?;
+        self.connection.execute("DELETE FROM findings WHERE flow_id = ?1", params![flow_id as i64])?;
+        Ok(())
+    }
+
     pub fn load_flows(&self, limit: usize, offset: usize) -> Result<Vec<HttpFlow>> {
         let mut statement = self.connection.prepare(
             r#"

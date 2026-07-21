@@ -68,9 +68,9 @@ fn render_traffic_table(
     });
 
     let title = if app.search_query.is_empty() {
-        " Traffic Intelligence ".to_string()
+        " Traffic Intelligence  d/Del delete selected ".to_string()
     } else {
-        format!(" Traffic Intelligence /{} ", app.search_query)
+        format!(" Traffic Intelligence /{}  d/Del delete selected ", app.search_query)
     };
 
     let table = Table::new(

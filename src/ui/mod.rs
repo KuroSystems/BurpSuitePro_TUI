@@ -287,11 +287,17 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
         crate::app::ProxyStatus::Failed => Color::Red,
         crate::app::ProxyStatus::Stopped => Color::Yellow,
     };
+    let project_line = if app.project_input_mode.is_some() {
+        format!("Project: {} _", app.project_name_buffer)
+    } else {
+        format!("Project: {}", app.database.path().display())
+    };
     let lines = vec![
         Line::from(vec![
             Span::styled(" Status ", Style::default().fg(Color::Black).bg(status_color).add_modifier(Modifier::BOLD)),
             Span::raw(format!(" {}", app.proxy_status.label())),
         ]),
+        Line::raw(project_line),
         Line::raw(""),
         Line::from(vec![
             Span::styled("Listen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
@@ -320,6 +326,12 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" apply edited port  "),
             Span::styled(" Esc ", Style::default().fg(Color::Black).bg(Color::Red)),
             Span::raw(" cancel edit"),
+        ]),
+        Line::from(vec![
+            Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" new project  "),
+            Span::styled(" P ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" rename project"),
         ]),
         Line::from(vec![
             Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Yellow)),

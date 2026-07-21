@@ -67,6 +67,12 @@ impl FlowStore {
             .and_then(|flows| flows.iter().find(|flow| flow.id == id).cloned())
     }
 
+    pub fn remove_by_id(&self, id: u64) -> Option<HttpFlow> {
+        let mut flows = self.flows.write().ok()?;
+        let index = flows.iter().position(|flow| flow.id == id)?;
+        Some(flows.remove(index))
+    }
+
     pub fn push_websocket_frame(&self, mut frame: WebSocketFrameRecord) {
         if frame.id == 0 {
             frame.id = self.next_websocket_id();

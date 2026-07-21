@@ -193,6 +193,8 @@ pub struct App {
     pub database: Database,
     pub project_message: String,
     pub local_clipboard: String,
+    pub project_input_mode: Option<ProjectInputMode>,
+    pub project_name_buffer: String,
     pub scope_engine: ScopeEngine,
     pub selected_scope_rule: usize,
     pub scope_input_mode: Option<ScopeInputMode>,
@@ -276,6 +278,11 @@ pub enum ScopeInputMode {
     Test,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectInputMode {
+    Rename,
+}
+
 impl App {
     pub fn new(
         flow_store: FlowStore,
@@ -337,6 +344,8 @@ impl App {
             database,
             project_message,
             local_clipboard: String::new(),
+            project_input_mode: None,
+            project_name_buffer: String::new(),
             scope_engine: ScopeEngine::new(scope_rules),
             selected_scope_rule: 0,
             scope_input_mode: None,
@@ -901,11 +910,36 @@ impl App {
             }
             Tab::Scanner if self.scanner_ai_mode == ScannerAiMode::RulePrompt => Some(self.scanner_ai_input.clone()),
             Tab::Settings if self.settings_editing_proxy_addr => Some(self.proxy_addr_input.clone()),
+            Tab::Settings if self.project_input_mode.is_some() => Some(self.project_name_buffer.clone()),
             _ => None,
         }
     }
 
     fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
+        if self.project_input_mode.is_some() {
+            match key.code {
+                KeyCode::Enter => {
+                    self.rename_project_from_buffer();
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.project_input_mode = None;
+                    self.project_name_buffer.clear();
+                    self.project_message = "Project rename cancelled".to_string();
+                    return true;
+                }
+                KeyCode::Backspace => {
+                    self.project_name_buffer.pop();
+                    return true;
+                }
+                KeyCode::Char(char) => {
+                    self.project_name_buffer.push(char);
+                    return true;
+                }
+                _ => return true,
+            }
+        }
+
         if self.settings_editing_proxy_addr {
             match key.code {
                 KeyCode::Enter => {
@@ -937,6 +971,14 @@ impl App {
             }
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
                 self.open_project_from_env();
+                true
+            }
+            (KeyCode::Char('n'), _) => {
+                self.create_new_project();
+                true
+            }
+            (KeyCode::Char('P'), _) => {
+                self.start_project_rename();
                 true
             }
             (KeyCode::Char('s'), _) | (KeyCode::F(5), _) => {
@@ -971,6 +1013,79 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    fn create_new_project(&mut self) {
+        self.autosave_project();
+        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let path = std::env::temp_dir().join(format!("proxima-project-{timestamp}.db"));
+        match Database::open(&path) {
+            Ok(database) => {
+                self.load_project_database(database);
+                self.project_message = format!("Created new project {}", path.display());
+            }
+            Err(error) => self.project_message = format!("New project failed: {error}"),
+        }
+    }
+
+    fn start_project_rename(&mut self) {
+        self.project_input_mode = Some(ProjectInputMode::Rename);
+        self.project_name_buffer = self
+            .database
+            .path()
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("proxima-project")
+            .to_string();
+        self.project_message = "Rename project: type name/path, Enter apply, Esc cancel".to_string();
+    }
+
+    fn rename_project_from_buffer(&mut self) {
+        let input = self.project_name_buffer.trim();
+        if input.is_empty() {
+            self.project_message = "Project name/path cannot be empty".to_string();
+            return;
+        }
+        let destination = resolve_project_path(self.database.path(), input);
+        self.autosave_project();
+        match self.database.save_as(&destination) {
+            Ok(path) => match Database::open(&path) {
+                Ok(database) => {
+                    self.load_project_database(database);
+                    self.project_input_mode = None;
+                    self.project_name_buffer.clear();
+                    self.project_message = format!("Renamed/opened project {}", path.display());
+                }
+                Err(error) => self.project_message = format!("Renamed but reopen failed: {error}"),
+            },
+            Err(error) => self.project_message = format!("Project rename failed: {error}"),
+        }
+    }
+
+    fn load_project_database(&mut self, database: Database) {
+        self.database = database;
+        self.flow_store
+            .set_flows(self.database.load_flows(10_000, 0).unwrap_or_default());
+        if let Ok(tabs) = self.database.load_repeater_tabs() {
+            if tabs.is_empty() {
+                self.repeater_tabs = vec![RepeaterTab::new(1, "Request 1", default_repeater_request())];
+            } else {
+                self.repeater_tabs = tabs;
+            }
+        }
+        self.active_repeater = 0;
+        self.next_repeater_id = self.repeater_tabs.iter().map(|tab| tab.id).max().unwrap_or(0) + 1;
+        self.repeater_cursor = self
+            .repeater_tabs
+            .get(self.active_repeater)
+            .map(|tab| tab.request_text.len())
+            .unwrap_or_default();
+        self.scope_engine = ScopeEngine::new(self.database.load_scope_rules().unwrap_or_default());
+        self.intruder_results = self.database.load_intruder_results().unwrap_or_default();
+        self.findings = self.database.load_findings().unwrap_or_default();
+        self.selected_flow = None;
+        self.selected_finding = 0;
+        self.intruder_selected_result = 0;
     }
 
     fn apply_proxy_listen_input(&mut self) {
@@ -1072,8 +1187,41 @@ impl App {
                 self.reset_detail_scroll();
                 true
             }
+            (KeyCode::Delete, _) | (KeyCode::Char('d'), KeyModifiers::NONE) => {
+                self.delete_selected_flow();
+                true
+            }
             _ => false,
         }
+    }
+
+    fn delete_selected_flow(&mut self) {
+        let Some(index) = self.selected_flow else {
+            self.project_message = "No proxy flow selected to delete".to_string();
+            return;
+        };
+        let flows = self.flow_store.snapshot();
+        if index >= flows.len() {
+            self.selected_flow = flows.len().checked_sub(1);
+            self.project_message = "Selected flow no longer exists".to_string();
+            return;
+        }
+        let flow_id = flows[index].id;
+        let Some(flow) = self.flow_store.remove_by_id(flow_id) else {
+            self.selected_flow = self.flow_store.len().checked_sub(1);
+            self.project_message = "Selected flow no longer exists".to_string();
+            return;
+        };
+        self.flow_ai_explanations.remove(&flow.id);
+        self.findings.retain(|finding| finding.flow_id != flow.id);
+        if let Err(error) = self.database.delete_flow(flow.id) {
+            self.project_message = format!("Deleted flow locally, but DB delete failed: {error}");
+        } else {
+            self.project_message = format!("Deleted proxy flow #{}", flow.id);
+        }
+        let len = self.flow_store.len();
+        self.selected_flow = if len == 0 { None } else { Some(index.min(len - 1)) };
+        self.reset_detail_scroll();
     }
 
     fn handle_repeater_key(&mut self, key: KeyEvent) -> bool {
@@ -2854,6 +3002,8 @@ impl App {
             Tab::Settings => {
                 if self.settings_editing_proxy_addr {
                     self.proxy_addr_input.push_str(text.trim());
+                } else if self.project_input_mode.is_some() {
+                    self.project_name_buffer.push_str(text.trim());
                 }
             }
             _ => {}
@@ -3669,6 +3819,21 @@ impl App {
         self.autosave_project();
         self.stop_proxy();
         self.should_quit = true;
+    }
+}
+
+fn resolve_project_path(current_path: &std::path::Path, input: &str) -> std::path::PathBuf {
+    let mut path = std::path::PathBuf::from(input.trim());
+    if path.extension().is_none() {
+        path.set_extension("db");
+    }
+    if path.is_relative() {
+        current_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(path)
+    } else {
+        path
     }
 }
 
