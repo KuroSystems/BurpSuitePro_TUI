@@ -51,8 +51,8 @@ pub enum Tab {
 
 impl Tab {
     pub const ALL: [Self; 12] = [
-        Self::Proxy,
         Self::Ai,
+        Self::Proxy,
         Self::Repeater,
         Self::Scope,
         Self::Intruder,
@@ -316,7 +316,7 @@ impl App {
         let findings = database.load_findings().unwrap_or_default();
         let project_message = format!("Project: {}", database.path().display());
         Self {
-            current_tab: Tab::Proxy,
+            current_tab: Tab::Ai,
             should_quit: false,
             tick_count: 0,
             proxy_status: ProxyStatus::Stopped,
@@ -1376,7 +1376,11 @@ impl App {
 
     fn handle_ai_key(&mut self, key: KeyEvent) -> bool {
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::CONTROL) => {
+            (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.submit_ai_prompt();
+                true
+            }
+            (KeyCode::Char('\n'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.submit_ai_prompt();
                 true
             }
