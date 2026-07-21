@@ -47,11 +47,12 @@ pub enum Tab {
     Active,
     WebSockets,
     Plugins,
+    Help,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Ai,
         Self::Proxy,
         Self::Repeater,
@@ -63,6 +64,7 @@ impl Tab {
         Self::Active,
         Self::WebSockets,
         Self::Plugins,
+        Self::Help,
         Self::Settings,
     ];
 
@@ -79,6 +81,7 @@ impl Tab {
             Self::Active => "Active",
             Self::WebSockets => "WebSockets",
             Self::Plugins => "Plugins",
+            Self::Help => "Help",
             Self::Settings => "Settings",
         }
     }
@@ -306,6 +309,15 @@ pub enum ProjectInputMode {
     Rename,
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentToolInfo {
+    pub tab: &'static str,
+    pub tool: &'static str,
+    pub purpose: &'static str,
+    pub risk: &'static str,
+    pub agent_usage: &'static str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiSkillFormat {
     Markdown,
@@ -382,6 +394,43 @@ pub enum AiSkillModalField {
     Title,
     Format,
     Body,
+}
+
+pub fn agent_tool_catalog() -> Vec<AgentToolInfo> {
+    vec![
+        AgentToolInfo { tab: "AI", tool: "ai.chat", purpose: "Ask local Ollama with selected skill or agent context", risk: "passive", agent_usage: "summarize evidence, create plans, write reports" },
+        AgentToolInfo { tab: "AI", tool: "ai.skills", purpose: "Use selected Markdown/JSON skill instructions", risk: "passive", agent_usage: "shape answers without tool execution" },
+        AgentToolInfo { tab: "Proxy", tool: "proxy.selected_flow", purpose: "Read selected HTTP request/response", risk: "passive", agent_usage: "explain endpoint, extract params, build evidence pack" },
+        AgentToolInfo { tab: "Proxy", tool: "proxy.flow_explain", purpose: "Generate AI Flow Brief for selected flow", risk: "passive", agent_usage: "understand request purpose, headers, auth and tech hints" },
+        AgentToolInfo { tab: "Proxy", tool: "proxy.delete_flow", purpose: "Remove selected flow from local traffic list", risk: "local_modify", agent_usage: "cleanup only after explicit user action" },
+        AgentToolInfo { tab: "Repeater", tool: "repeater.ai_draft", purpose: "Build or modify raw HTTP request draft", risk: "local_modify", agent_usage: "create safe test request; does not send automatically" },
+        AgentToolInfo { tab: "Repeater", tool: "repeater.send", purpose: "Send raw HTTP request", risk: "sends_traffic", agent_usage: "requires explicit approval/manual send" },
+        AgentToolInfo { tab: "Scope", tool: "scope.check_url", purpose: "Check if URL is in scope", risk: "passive", agent_usage: "safety gate before active tools" },
+        AgentToolInfo { tab: "Scope", tool: "scope.ai_rules", purpose: "Generate include/exclude regex rules", risk: "local_modify", agent_usage: "proposal only; append/replace requires user action" },
+        AgentToolInfo { tab: "Intruder", tool: "intruder.ai_payloads", purpose: "Generate safe payload lists", risk: "local_modify", agent_usage: "payload lab; no attack starts automatically" },
+        AgentToolInfo { tab: "Intruder", tool: "intruder.ai_plan", purpose: "Plan positions, attack type and payload sets", risk: "local_modify", agent_usage: "draft attack setup; F5/manual run required" },
+        AgentToolInfo { tab: "Intruder", tool: "intruder.run", purpose: "Run configured payload attack", risk: "sends_traffic", agent_usage: "requires explicit approval/manual start" },
+        AgentToolInfo { tab: "Decoder", tool: "decoder.chain", purpose: "Apply deterministic decode transforms", risk: "passive", agent_usage: "decode Base64/URL/Hex/JWT/JSON/HTML" },
+        AgentToolInfo { tab: "Decoder", tool: "decoder.agent", purpose: "Agentic best-effort decoding beyond fixed chains", risk: "passive", agent_usage: "analyze opaque/nested encoded blobs" },
+        AgentToolInfo { tab: "Comparer", tool: "comparer.diff", purpose: "Compare left/right text or HTTP bodies", risk: "passive", agent_usage: "spot status, role, header, token and length changes" },
+        AgentToolInfo { tab: "Comparer", tool: "comparer.ai_summary", purpose: "Natural-language diff explanation", risk: "passive", agent_usage: "IDOR/auth bypass signal analysis" },
+        AgentToolInfo { tab: "Scanner", tool: "scanner.findings", purpose: "Read passive/active findings", risk: "passive", agent_usage: "triage vulnerabilities and build report context" },
+        AgentToolInfo { tab: "Scanner", tool: "scanner.ai_triage", purpose: "AI triage selected finding", risk: "passive", agent_usage: "risk, false positive, exploitability and remediation" },
+        AgentToolInfo { tab: "Scanner", tool: "scanner.rule_generator", purpose: "Generate passive scanner YAML rules", risk: "local_modify", agent_usage: "save only after validation/user approval" },
+        AgentToolInfo { tab: "Active", tool: "active.enqueue", purpose: "Queue selected in-scope target", risk: "local_modify", agent_usage: "prepare active scan only after scope check" },
+        AgentToolInfo { tab: "Active", tool: "active.run", purpose: "Run safe active probes", risk: "sends_traffic", agent_usage: "requires explicit user approval" },
+        AgentToolInfo { tab: "WebSockets", tool: "websocket.read_frames", purpose: "Read captured WebSocket frames", risk: "passive", agent_usage: "classify events, auth signals, IDOR candidates" },
+        AgentToolInfo { tab: "WebSockets", tool: "websocket.group_events", purpose: "Group frames by direction/event/body shape", risk: "passive", agent_usage: "passive websocket analysis" },
+        AgentToolInfo { tab: "Plugins", tool: "plugins.inspect", purpose: "List loaded sandboxed plugins", risk: "passive", agent_usage: "understand extension-provided findings/capabilities" },
+    ]
+}
+
+pub fn agent_tool_catalog_markdown() -> String {
+    let mut output = String::from("Available agent tools:\n");
+    for tool in agent_tool_catalog() {
+        output.push_str(&format!("- [{}] `{}` ({}) — {}. Agent use: {}\n", tool.tab, tool.tool, tool.risk, tool.purpose, tool.agent_usage));
+    }
+    output
 }
 
 impl App {
@@ -2049,9 +2098,10 @@ impl App {
             .map(|flow| self.scope_engine.is_in_scope(&flow.uri))
             .unwrap_or(false);
         format!(
-            "App context:\n- {selected_flow}\n- selected flow in scope: {in_scope}\n- scanner findings: {finding_count}\n- websocket frames: {websocket_count}\n- active targets queued: {}\n- current tab: {}",
+            "App context:\n- {selected_flow}\n- selected flow in scope: {in_scope}\n- scanner findings: {finding_count}\n- websocket frames: {websocket_count}\n- active targets queued: {}\n- current tab: {}\n\n{}",
             self.active_scan_targets.len(),
-            self.current_tab.title()
+            self.current_tab.title(),
+            agent_tool_catalog_markdown()
         )
     }
 

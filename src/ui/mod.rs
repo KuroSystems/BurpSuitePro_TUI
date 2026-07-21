@@ -18,7 +18,7 @@ mod scanner_tab;
 mod websocket_tab;
 
 use crate::{
-    app::{App, ScopeAiMode, Tab},
+    app::{agent_tool_catalog, App, ScopeAiMode, Tab},
     models::{
         ai::{ScopeRuleProposal, ScopeRuleProposalState},
         scope::{ScopeEngine, ScopeRule, ScopeRuleType},
@@ -83,6 +83,7 @@ fn render_current_tab(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Active => active_tab::render_active_tab(frame, app, area),
         Tab::WebSockets => websocket_tab::render_websocket_tab(frame, app, area),
         Tab::Plugins => plugin_tab::render_plugin_tab(frame, app, area),
+        Tab::Help => render_help(frame, app, area),
         Tab::Settings => render_settings(frame, app, area),
     }
 }
@@ -270,6 +271,66 @@ fn confidence_span(confidence: Option<f32>) -> Span<'static> {
         value /= 100.0;
     }
     Span::styled(format!("confidence: {:.0}%", value.clamp(0.0, 1.0) * 100.0), Style::default().fg(Color::Green))
+}
+
+fn render_help(frame: &mut Frame, _app: &App, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(0), Constraint::Length(4)])
+        .split(area);
+    let header = vec![
+        Line::from(vec![
+            Span::styled(" Proxima Agent Tool Catalog ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("  use this when designing custom agents"),
+        ]),
+        Line::raw("Tools are grouped by tab. Risk: passive = read-only, local_modify = changes local state, sends_traffic = requires explicit user approval."),
+    ];
+    frame.render_widget(
+        Paragraph::new(header)
+            .block(Block::default().title(" Help / Agent Capabilities ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        layout[0],
+    );
+
+    let mut lines = Vec::new();
+    let mut current_tab = "";
+    for tool in agent_tool_catalog() {
+        if tool.tab != current_tab {
+            current_tab = tool.tab;
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(current_tab.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        }
+        let risk_color = match tool.risk {
+            "passive" => Color::Green,
+            "local_modify" => Color::Yellow,
+            "sends_traffic" => Color::Red,
+            _ => Color::Gray,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {} ", tool.risk), Style::default().fg(Color::Black).bg(risk_color)),
+            Span::raw(" "),
+            Span::styled(tool.tool, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::raw(format!(" — {}", tool.purpose)),
+        ]));
+        lines.push(Line::styled(format!("     Agent usage: {}", tool.agent_usage), Style::default().fg(Color::DarkGray)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title(" Available Agent Tools ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        layout[1],
+    );
+
+    let footer = vec![
+        Line::raw("Agent Page: AI tab -> F3/Ctrl+G. In Agent Mode, AI routes prompts to relevant custom agents and proposes a plan."),
+        Line::raw("Safety governor: passive tools can be summarized; traffic-sending tools are never executed automatically."),
+    ];
+    frame.render_widget(
+        Paragraph::new(footer)
+            .block(Block::default().title(" Agent Design Notes ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        layout[2],
+    );
 }
 
 fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
@@ -466,6 +527,8 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         " Ctrl+K chain  Ctrl+G/F2 agent  "
     } else if app.current_tab == Tab::Comparer {
         " Ctrl+K AI summary  "
+    } else if app.current_tab == Tab::Help {
+        " agent tool catalog  "
     } else {
         ""
     };

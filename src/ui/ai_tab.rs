@@ -111,7 +111,7 @@ fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
     }
     if app.ai_panel.is_waiting {
         if app.ai_prompt_mode == AiPromptMode::Agent {
-            push_agent_planning_animation(&mut lines, app.tick_count);
+            push_agent_planning_animation(&mut lines, app);
         } else {
             push_skill_processing_animation(&mut lines, app);
         }
@@ -135,17 +135,7 @@ fn render_conversation(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn push_skill_processing_animation(lines: &mut Vec<Line<'static>>, app: &App) {
-    let tick = app.tick_count;
-    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(tick as usize) % 10];
-    let stages = [
-        "Reading prompt",
-        "Loading selected skill",
-        "Checking attached context",
-        "Separating evidence from assumptions",
-        "Drafting structured answer",
-        "Rendering Markdown",
-    ];
-    let current = ((tick / 6) as usize) % stages.len();
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(app.tick_count as usize) % 10];
     let skill_name = app
         .active_ai_skill()
         .map(|(name, _)| name)
@@ -156,33 +146,36 @@ fn push_skill_processing_animation(lines: &mut Vec<Line<'static>>, app: &App) {
         Span::styled("Skill: ", Style::default().fg(Color::DarkGray)),
         Span::styled(skill_name, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
     ]));
-    lines.push(Line::styled(progress_rail(current + 1, stages.len()), Style::default().fg(Color::Cyan)));
-    for (index, stage) in stages.iter().enumerate() {
-        if index < current {
-            lines.push(Line::styled(format!("✓ {stage}"), Style::default().fg(Color::Green)));
-        } else if index == current {
-            lines.push(Line::styled(format!("{spinner} {stage}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-        } else {
-            lines.push(Line::styled(format!("• {stage}"), Style::default().fg(Color::DarkGray)));
-        }
-    }
+    lines.push(Line::styled(progress_rail(3, 5), Style::default().fg(Color::Cyan)));
+    lines.push(Line::styled("✓ Prompt captured", Style::default().fg(Color::Green)));
+    lines.push(Line::styled("✓ Skill and context attached to request", Style::default().fg(Color::Green)));
+    lines.push(Line::styled(format!("{spinner} Waiting for Ollama response"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    lines.push(Line::styled("• Markdown renderer will format the final answer", Style::default().fg(Color::DarkGray)));
+    lines.push(Line::styled("• Conversation will auto-update when backend event arrives", Style::default().fg(Color::DarkGray)));
 }
 
-fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, tick: u64) {
-    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(tick as usize) % 10];
-    let stages = ["Routing request", "Scoring custom agents", "Mapping app tools", "Checking safety gates", "Building execution plan"];
-    let current = ((tick / 6) as usize) % stages.len();
+fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, app: &App) {
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][(app.tick_count as usize) % 10];
     lines.push(Line::raw(""));
     lines.push(Line::styled("◈ Agent Mode", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
     lines.push(Line::styled("Tools: [Proxy] [Scanner] [WebSockets] [Repeater] [AI Report]", Style::default().fg(Color::Cyan)));
-    lines.push(Line::styled(progress_rail(current + 1, stages.len()), Style::default().fg(Color::Magenta)));
-    for (index, stage) in stages.iter().enumerate() {
-        if index < current {
-            lines.push(Line::styled(format!("✓ {stage}"), Style::default().fg(Color::Green)));
-        } else if index == current {
-            lines.push(Line::styled(format!("{spinner} {stage}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-        } else {
-            lines.push(Line::styled(format!("• {stage}"), Style::default().fg(Color::DarkGray)));
+    match &app.ai_agent_plan_state {
+        Some(AiAgentPlanState::Planning) => {
+            lines.push(Line::styled(progress_rail(2, 4), Style::default().fg(Color::Magenta)));
+            lines.push(Line::styled("✓ User objective captured", Style::default().fg(Color::Green)));
+            lines.push(Line::styled("✓ Agent catalog and tool catalog sent to router", Style::default().fg(Color::Green)));
+            lines.push(Line::styled(format!("{spinner} Waiting for agent router plan from Ollama"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            lines.push(Line::styled("• Approval card will appear after plan is returned", Style::default().fg(Color::DarkGray)));
+        }
+        Some(AiAgentPlanState::Running(plan)) => {
+            lines.push(Line::styled(progress_rail(3, 4), Style::default().fg(Color::Magenta)));
+            for step in &plan.steps {
+                lines.push(Line::styled(format!("✓ Step {} {}.{}", step.order, step.tab, step.feature), Style::default().fg(Color::Green)));
+            }
+            lines.push(Line::styled(format!("{spinner} Preparing final agent report"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        }
+        _ => {
+            lines.push(Line::styled(format!("{spinner} Preparing agent workflow"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
         }
     }
 }
