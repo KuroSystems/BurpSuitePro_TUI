@@ -168,11 +168,25 @@ fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, app: &App) {
             lines.push(Line::styled("• Approval card will appear after plan is returned", Style::default().fg(Color::DarkGray)));
         }
         Some(AiAgentPlanState::Running(plan)) => {
-            lines.push(Line::styled(progress_rail(3, 4), Style::default().fg(Color::Magenta)));
-            for step in &plan.steps {
-                lines.push(Line::styled(format!("✓ Step {} {}.{}", step.order, step.tab, step.feature), Style::default().fg(Color::Green)));
+            let total = plan.steps.len().max(1);
+            let current = app.ai_agent_execution_step.min(total);
+            lines.push(Line::styled(progress_rail(current, total), Style::default().fg(Color::Magenta)));
+            if plan.steps.is_empty() {
+                lines.push(Line::styled(format!("{spinner} Building passive evidence summary"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            } else {
+                for (index, step) in plan.steps.iter().enumerate() {
+                    if index < current {
+                        lines.push(Line::styled(format!("✓ Step {} {} → {}", step.order, step.tab, step.feature), Style::default().fg(Color::Green)));
+                    } else if index == current {
+                        lines.push(Line::styled(format!("{spinner} Step {} {} → {}", step.order, step.tab, step.feature), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+                    } else {
+                        lines.push(Line::styled(format!("• Step {} {} → {}", step.order, step.tab, step.feature), Style::default().fg(Color::DarkGray)));
+                    }
+                }
             }
-            lines.push(Line::styled(format!("{spinner} Preparing final agent report"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            if current >= total {
+                lines.push(Line::styled(format!("{spinner} Preparing final agent report"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            }
         }
         _ => {
             lines.push(Line::styled(format!("{spinner} Preparing agent workflow"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));

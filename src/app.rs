@@ -295,6 +295,8 @@ pub struct App {
     pub ai_agent_modal_body: String,
     pub ai_agent_plan_state: Option<AiAgentPlanState>,
     pub ai_agent_approval_selection: AgentApprovalSelection,
+    pub ai_agent_execution_step: usize,
+    pub ai_agent_execution_last_tick: u64,
     pub flow_ai_explanations: HashMap<u64, FlowExplanationState>,
     pub finding_triage: HashMap<i64, FindingTriageState>,
     pub ollama_models: Vec<String>,
@@ -634,6 +636,8 @@ impl App {
             ai_agent_modal_body: String::new(),
             ai_agent_plan_state: None,
             ai_agent_approval_selection: AgentApprovalSelection::Accept,
+            ai_agent_execution_step: 0,
+            ai_agent_execution_last_tick: 0,
             flow_ai_explanations: HashMap::new(),
             finding_triage: HashMap::new(),
             ollama_models: Vec::new(),
@@ -694,6 +698,7 @@ impl App {
             self.ollama_auto_refreshed = true;
             self.refresh_ollama_models();
         }
+        self.tick_agent_execution();
         if self
             .proxy_task
             .as_ref()
@@ -713,6 +718,32 @@ impl App {
         if self.tick_count % 120 == 0 {
             self.autosave_project();
         }
+    }
+
+    fn tick_agent_execution(&mut self) {
+        let Some(AiAgentPlanState::Running(plan)) = self.ai_agent_plan_state.clone() else {
+            return;
+        };
+        if self.tick_count.saturating_sub(self.ai_agent_execution_last_tick) < 4 {
+            return;
+        }
+        self.ai_agent_execution_last_tick = self.tick_count;
+        let total_steps = plan.steps.len().max(1);
+        if self.ai_agent_execution_step < total_steps {
+            self.ai_agent_execution_step += 1;
+            self.ai_panel.status = format!(
+                "agent executing step {}/{}",
+                self.ai_agent_execution_step.min(total_steps),
+                total_steps
+            );
+            return;
+        }
+        let report = self.agent_execution_report(&plan);
+        self.ai_agent_plan_state = Some(AiAgentPlanState::Complete(report.clone()));
+        self.ai_panel.messages.push(AiMessage::assistant(report));
+        self.ai_panel.status = "agent workflow complete".to_string();
+        self.ai_panel.is_waiting = false;
+        self.project_message = "Agent workflow completed with passive/local execution".to_string();
     }
 
     fn handle_proxy_event(&mut self, event: ProxyEvent) {
@@ -2443,12 +2474,12 @@ impl App {
     }
 
     fn execute_agent_plan(&mut self, plan: AiAgentPlan) {
-        self.ai_agent_plan_state = Some(AiAgentPlanState::Running(plan.clone()));
-        let report = self.agent_execution_report(&plan);
-        self.ai_agent_plan_state = Some(AiAgentPlanState::Complete(report.clone()));
-        self.ai_panel.messages.push(AiMessage::assistant(report));
-        self.ai_panel.status = "agent workflow complete".to_string();
-        self.project_message = "Agent workflow completed with passive/local execution".to_string();
+        self.ai_agent_execution_step = 0;
+        self.ai_agent_execution_last_tick = self.tick_count;
+        self.ai_agent_plan_state = Some(AiAgentPlanState::Running(plan));
+        self.ai_panel.is_waiting = true;
+        self.ai_panel.status = "agent workflow running".to_string();
+        self.project_message = "Agent workflow running passive/local steps".to_string();
     }
 
     fn relevant_brain_context(&self, prompt: &str) -> Option<String> {
