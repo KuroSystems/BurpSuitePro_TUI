@@ -1266,22 +1266,6 @@ impl App {
                 self.open_project_panel();
                 true
             }
-            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                self.save_project_as_env();
-                true
-            }
-            (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
-                self.open_project_from_env();
-                true
-            }
-            (KeyCode::Char('n'), _) => {
-                self.create_new_project();
-                true
-            }
-            (KeyCode::Char('P'), _) => {
-                self.start_project_rename();
-                true
-            }
             (KeyCode::Char('s'), _) | (KeyCode::F(5), _) => {
                 self.start_proxy();
                 true

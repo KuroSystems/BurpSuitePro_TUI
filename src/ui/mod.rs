@@ -478,16 +478,8 @@ fn render_proxy_settings(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" cancel edit"),
         ]),
         Line::from(vec![
-            Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-            Span::raw(" new project  "),
-            Span::styled(" P ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-            Span::raw(" rename project"),
-        ]),
-        Line::from(vec![
-            Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::raw(" save project  "),
-            Span::styled(" Ctrl+O ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::raw(" open project"),
+            Span::styled(" F2 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" Project Manager handles new/rename/save/open"),
         ]),
         Line::raw(""),
         Line::styled("Tip: import the CA certificate into browser/OS trust store for HTTPS interception.", Style::default().fg(Color::DarkGray)),
