@@ -210,6 +210,7 @@ pub struct App {
     pub brain_selected_file: usize,
     pub brain_new_file_input: Option<String>,
     pub brain_scroll: u16,
+    pub brain_view_mode: BrainViewMode,
     pub brain_dirty: bool,
     pub brain_message: String,
     pub brain_search: String,
@@ -394,6 +395,28 @@ pub struct CustomAiSkill {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrainViewMode {
+    Edit,
+    Preview,
+}
+
+impl BrainViewMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Edit => "Edit",
+            Self::Preview => "Preview",
+        }
+    }
+
+    fn toggle(self) -> Self {
+        match self {
+            Self::Edit => Self::Preview,
+            Self::Preview => Self::Edit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiPromptMode {
     Skill,
     Agent,
@@ -552,6 +575,7 @@ impl App {
             brain_selected_file: 0,
             brain_new_file_input: None,
             brain_scroll: 0,
+            brain_view_mode: BrainViewMode::Edit,
             brain_dirty: false,
             brain_message: "Brain loaded".to_string(),
             brain_search: String::new(),
@@ -1228,7 +1252,7 @@ impl App {
                 }
             }
             Tab::Scanner if self.scanner_ai_mode == ScannerAiMode::RulePrompt => Some(self.scanner_ai_input.clone()),
-            Tab::Brain => Some(self.brain_markdown.clone()),
+            Tab::Brain if self.brain_view_mode == BrainViewMode::Edit => Some(self.brain_markdown.clone()),
             Tab::Settings if self.settings_editing_proxy_addr => Some(self.proxy_addr_input.clone()),
             Tab::Settings if self.project_input_mode.is_some() => Some(self.project_name_buffer.clone()),
             _ => None,
@@ -1250,6 +1274,16 @@ impl App {
                 self.brain_message = "New Markdown file: type filename, Enter create, Esc cancel".to_string();
                 true
             }
+            (KeyCode::Char('v'), KeyModifiers::NONE) | (KeyCode::F(3), _) => {
+                self.brain_view_mode = self.brain_view_mode.toggle();
+                self.brain_scroll = 0;
+                self.brain_message = format!("Brain view mode: {}", self.brain_view_mode.label());
+                true
+            }
+            (KeyCode::Delete, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                self.delete_selected_brain_file();
+                true
+            }
             (KeyCode::Down | KeyCode::Char('j'), _) => {
                 self.select_next_brain_file();
                 true
@@ -1266,17 +1300,17 @@ impl App {
                 self.brain_scroll = self.brain_scroll.saturating_sub(10);
                 true
             }
-            (KeyCode::Backspace, _) => {
+            (KeyCode::Backspace, _) if self.brain_view_mode == BrainViewMode::Edit => {
                 self.brain_markdown.pop();
                 self.brain_dirty = true;
                 true
             }
-            (KeyCode::Enter, _) => {
+            (KeyCode::Enter, _) if self.brain_view_mode == BrainViewMode::Edit => {
                 self.brain_markdown.push('\n');
                 self.brain_dirty = true;
                 true
             }
-            (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT) => {
+            (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT) if self.brain_view_mode == BrainViewMode::Edit => {
                 self.brain_markdown.push(ch);
                 self.brain_dirty = true;
                 true
@@ -1320,6 +1354,35 @@ impl App {
                 self.brain_message = format!("Brain saved to {}", self.brain_file_path.display());
             }
             Err(error) => self.brain_message = format!("Brain save failed: {error}"),
+        }
+    }
+
+    fn delete_selected_brain_file(&mut self) {
+        let files = self.brain_markdown_files();
+        if files.is_empty() {
+            self.brain_message = "No Markdown files to delete".to_string();
+            return;
+        }
+        let index = self.brain_selected_file.min(files.len() - 1);
+        let path = files[index].clone();
+        if self.brain_dirty && path == self.brain_file_path {
+            self.brain_message = "Save or switch away before deleting an unsaved Brain file".to_string();
+            return;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                let remaining = self.brain_markdown_files();
+                if remaining.is_empty() {
+                    self.brain_file_path = brain_path_for_project(self.database.path());
+                    self.brain_markdown = load_brain_from_path(&self.brain_file_path);
+                    self.brain_selected_file = 0;
+                } else {
+                    let next = index.min(remaining.len() - 1);
+                    self.load_brain_file(remaining[next].clone(), next);
+                }
+                self.brain_message = format!("Deleted {}", path.display());
+            }
+            Err(error) => self.brain_message = format!("Delete Markdown file failed: {error}"),
         }
     }
 
@@ -1704,6 +1767,7 @@ impl App {
         self.brain_markdown = load_brain_from_path(&self.brain_file_path);
         self.refresh_brain_selected_file();
         self.brain_scroll = 0;
+        self.brain_view_mode = BrainViewMode::Edit;
         self.brain_dirty = false;
         self.brain_message = "Brain loaded".to_string();
         self.brain_search.clear();
@@ -2505,8 +2569,24 @@ impl App {
         self.project_message = "Agent workflow running passive/local steps".to_string();
     }
 
-    fn relevant_brain_context(&self, prompt: &str) -> Option<String> {
-        let sections = brain_sections(&self.brain_markdown);
+    fn brain_corpus_sections(&self) -> Vec<(String, String)> {
+        let mut output = Vec::new();
+        for path in self.brain_markdown_files() {
+            let content = if path == self.brain_file_path {
+                self.brain_markdown.clone()
+            } else {
+                std::fs::read_to_string(&path).unwrap_or_default()
+            };
+            let source = path.file_name().and_then(|name| name.to_str()).unwrap_or("brain.md").to_string();
+            for section in brain_sections(&content) {
+                output.push((source.clone(), section));
+            }
+        }
+        output
+    }
+
+    pub fn relevant_brain_context(&self, prompt: &str) -> Option<String> {
+        let sections = self.brain_corpus_sections();
         if sections.is_empty() {
             return None;
         }
@@ -2518,10 +2598,10 @@ impl App {
             .collect::<Vec<_>>();
         let mut scored = sections
             .into_iter()
-            .map(|section| {
+            .map(|(source, section)| {
                 let haystack = section.to_ascii_lowercase();
                 let score = prompt_words.iter().filter(|word| haystack.contains(word.as_str())).count();
-                (score, section)
+                (score, format!("<!-- Brain source: {source} -->\n{section}"))
             })
             .filter(|(score, _)| *score > 0)
             .collect::<Vec<_>>();
@@ -4259,8 +4339,10 @@ impl App {
                 }
             }
             Tab::Brain => {
-                self.brain_markdown.push_str(&normalize_pasted_markdown(&text));
-                self.brain_dirty = true;
+                if self.brain_view_mode == BrainViewMode::Edit {
+                    self.brain_markdown.push_str(&normalize_pasted_markdown(&text));
+                    self.brain_dirty = true;
+                }
             }
             Tab::Settings => {
                 if self.settings_editing_proxy_addr {

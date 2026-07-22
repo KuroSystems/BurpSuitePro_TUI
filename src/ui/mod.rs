@@ -18,7 +18,7 @@ mod scanner_tab;
 mod websocket_tab;
 
 use crate::{
-    app::{agent_tool_catalog, App, ProjectPanelAction, ProjectPanelMode, ScopeAiMode, Tab},
+    app::{agent_tool_catalog, App, BrainViewMode, ProjectPanelAction, ProjectPanelMode, ScopeAiMode, Tab},
     models::{
         ai::{ScopeRuleProposal, ScopeRuleProposalState},
         scope::{ScopeEngine, ScopeRule, ScopeRuleType},
@@ -284,25 +284,43 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(layout[0]);
 
-    let editor_lines = app
-        .brain_markdown
-        .split('\n')
-        .map(|line| Line::raw(line.to_string()))
-        .collect::<Vec<_>>();
+    let editor_lines = if app.brain_view_mode == BrainViewMode::Preview {
+        render_brain_preview_lines(&app.brain_markdown)
+    } else {
+        app.brain_markdown
+            .split('\n')
+            .map(|line| Line::raw(line.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let title = if app.brain_view_mode == BrainViewMode::Preview {
+        " Proxima Brain Markdown Preview "
+    } else {
+        " Proxima Brain Markdown Editor "
+    };
     frame.render_widget(
         Paragraph::new(editor_lines)
-            .block(Block::default().title(" Proxima Brain Markdown ").borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)))
+            .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)))
             .scroll((app.brain_scroll, 0))
             .wrap(Wrap { trim: false }),
         columns[0],
     );
 
+    let side = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(columns[1]);
     let markdown_files = brain_markdown_file_lines(app);
     frame.render_widget(
         Paragraph::new(markdown_files)
-            .block(Block::default().title(" Markdown Files (.md)  Ctrl+N new  ↑/↓ switch ").borders(Borders::ALL))
+            .block(Block::default().title(" Markdown Files (.md)  Ctrl+N new  ↑/↓ switch  Del delete ").borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
-        columns[1],
+        side[0],
+    );
+    frame.render_widget(
+        Paragraph::new(brain_intelligence_lines(app))
+            .block(Block::default().title(" Brain Intelligence Status ").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+            .wrap(Wrap { trim: true }),
+        side[1],
     );
 
     let words = app.brain_markdown.split_whitespace().count();
@@ -311,10 +329,14 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Green)),
             Span::raw(" save  "),
+            Span::styled(" v/F3 ", Style::default().fg(Color::Black).bg(Color::Magenta)),
+            Span::raw(format!(" {}  ", app.brain_view_mode.label())),
             Span::styled(" Ctrl+N/F2 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
             Span::raw(" new .md  "),
+            Span::styled(" Del/Ctrl+D ", Style::default().fg(Color::Black).bg(Color::Red)),
+            Span::raw(" delete  "),
             Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::raw(" switch file  "),
+            Span::raw(" switch  "),
             Span::styled(" PgUp/PgDn ", Style::default().fg(Color::Black).bg(Color::Magenta)),
             Span::raw(" scroll  "),
             Span::styled(if app.brain_dirty { " unsaved " } else { " saved " }, Style::default().fg(Color::Black).bg(if app.brain_dirty { Color::Yellow } else { Color::Green })),
@@ -326,6 +348,66 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(footer).block(Block::default().title(" Brain Status ").borders(Borders::ALL)),
         layout[1],
     );
+}
+
+fn render_brain_preview_lines(markdown: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut in_code = false;
+    for raw in markdown.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            lines.push(Line::styled(if in_code { " code " } else { "" }, Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)));
+        } else if in_code {
+            lines.push(Line::styled(format!("  {line}"), Style::default().fg(Color::LightCyan).bg(Color::Black)));
+        } else if let Some(text) = trimmed.strip_prefix("# ") {
+            lines.push(Line::styled(text.to_string(), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+        } else if let Some(text) = trimmed.strip_prefix("## ") {
+            lines.push(Line::styled(text.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        } else if let Some(text) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            lines.push(Line::from(vec![Span::styled("  • ", Style::default().fg(Color::Cyan)), Span::raw(text.to_string())]));
+        } else if trimmed.starts_with('|') && trimmed.ends_with('|') {
+            lines.push(Line::styled(trimmed.to_string(), Style::default().fg(Color::Yellow)));
+        } else {
+            lines.push(Line::raw(line.to_string()));
+        }
+    }
+    lines
+}
+
+fn brain_intelligence_lines(app: &App) -> Vec<Line<'static>> {
+    let files = app.brain_markdown_files();
+    let total_sections = files
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .map(|content| content.lines().filter(|line| line.trim_start().starts_with('#')).count())
+        .sum::<usize>();
+    let total_words = files
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .map(|content| content.split_whitespace().count())
+        .sum::<usize>();
+    let active_sections = app.brain_markdown.lines().filter(|line| line.trim_start().starts_with('#')).count();
+    let active_words = app.brain_markdown.split_whitespace().count();
+    let query = app.ai_panel.input.trim();
+    let relevant = if query.is_empty() {
+        0
+    } else {
+        app.relevant_brain_context(query)
+            .map(|context| context.split("\n\n---\n\n").count())
+            .unwrap_or(0)
+    };
+    vec![
+        Line::from(vec![Span::styled("Mode: ", Style::default().fg(Color::DarkGray)), Span::styled(app.brain_view_mode.label(), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))]),
+        Line::raw(format!("Files indexed: {}", files.len())),
+        Line::raw(format!("Total sections: {total_sections}")),
+        Line::raw(format!("Total words: {total_words}")),
+        Line::raw(format!("Active file sections: {active_sections}")),
+        Line::raw(format!("Active file words: {active_words}")),
+        Line::raw(format!("Relevant sections for AI prompt: {relevant}")),
+        Line::styled("AI integration: top matching Brain sections are injected into Skill and Agent prompts.", Style::default().fg(Color::DarkGray)),
+    ]
 }
 
 fn brain_markdown_file_lines(app: &App) -> Vec<Line<'static>> {
