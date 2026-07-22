@@ -1178,29 +1178,6 @@ impl App {
                 self.save_brain();
                 true
             }
-            (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                self.brain_search.clear();
-                self.brain_search_mode = true;
-                self.brain_message = "Search mode: type query, Esc clears search".to_string();
-                true
-            }
-            (KeyCode::Esc, _) if self.brain_search_mode => {
-                self.brain_search.clear();
-                self.brain_search_mode = false;
-                true
-            }
-            (KeyCode::Backspace, _) if self.brain_search_mode => {
-                self.brain_search.pop();
-                true
-            }
-            (KeyCode::Enter, _) if self.brain_search_mode => {
-                self.brain_search_mode = false;
-                true
-            }
-            (KeyCode::Char(ch), _) if self.brain_search_mode => {
-                self.brain_search.push(ch);
-                true
-            }
             (KeyCode::Backspace, _) => {
                 self.brain_markdown.pop();
                 self.brain_dirty = true;
@@ -4058,7 +4035,7 @@ impl App {
                 }
             }
             Tab::Brain => {
-                self.brain_markdown.push_str(&text.replace("\r\n", "\n"));
+                self.brain_markdown.push_str(&normalize_pasted_markdown(&text));
                 self.brain_dirty = true;
             }
             Tab::Settings => {
@@ -4890,6 +4867,10 @@ impl App {
         self.stop_proxy();
         self.should_quit = true;
     }
+}
+
+fn normalize_pasted_markdown(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn brain_path_for_project(project_path: &std::path::Path) -> std::path::PathBuf {
