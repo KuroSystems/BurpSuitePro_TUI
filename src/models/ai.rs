@@ -150,6 +150,9 @@ pub enum AiEvent {
     AgentPlanComplete {
         result: Result<AiAgentPlan, String>,
     },
+    AgentExecutionComplete {
+        result: Result<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -584,6 +587,7 @@ pub enum AiAgentPlanState {
     Planning,
     AwaitingApproval(AiAgentPlan),
     Running(AiAgentPlan),
+    Finalizing(AiAgentPlan),
     Complete(String),
     Error(String),
 }

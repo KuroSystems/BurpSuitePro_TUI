@@ -188,6 +188,13 @@ fn push_agent_planning_animation(lines: &mut Vec<Line<'static>>, app: &App) {
                 lines.push(Line::styled(format!("{spinner} Preparing final agent report"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
             }
         }
+        Some(AiAgentPlanState::Finalizing(plan)) => {
+            let total = plan.steps.len().max(1);
+            lines.push(Line::styled(progress_rail(total, total), Style::default().fg(Color::Magenta)));
+            lines.push(Line::styled("✓ Passive/local evidence collected", Style::default().fg(Color::Green)));
+            lines.push(Line::styled("✓ Execution steps completed", Style::default().fg(Color::Green)));
+            lines.push(Line::styled(format!("{spinner} Asking AI to synthesize final result from evidence"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        }
         _ => {
             lines.push(Line::styled(format!("{spinner} Preparing agent workflow"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
         }

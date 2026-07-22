@@ -295,6 +295,7 @@ pub struct App {
     pub ai_agent_modal_body: String,
     pub ai_agent_plan_state: Option<AiAgentPlanState>,
     pub ai_agent_approval_selection: AgentApprovalSelection,
+    pub ai_agent_current_prompt: String,
     pub ai_agent_execution_step: usize,
     pub ai_agent_execution_last_tick: u64,
     pub flow_ai_explanations: HashMap<u64, FlowExplanationState>,
@@ -636,6 +637,7 @@ impl App {
             ai_agent_modal_body: String::new(),
             ai_agent_plan_state: None,
             ai_agent_approval_selection: AgentApprovalSelection::Accept,
+            ai_agent_current_prompt: String::new(),
             ai_agent_execution_step: 0,
             ai_agent_execution_last_tick: 0,
             flow_ai_explanations: HashMap::new(),
@@ -738,12 +740,17 @@ impl App {
             );
             return;
         }
-        let report = self.agent_execution_report(&plan);
-        self.ai_agent_plan_state = Some(AiAgentPlanState::Complete(report.clone()));
-        self.ai_panel.messages.push(AiMessage::assistant(report));
-        self.ai_panel.status = "agent workflow complete".to_string();
-        self.ai_panel.is_waiting = false;
-        self.project_message = "Agent workflow completed with passive/local execution".to_string();
+        let evidence = self.agent_execution_evidence(&plan);
+        let prompt = self.ai_agent_current_prompt.clone();
+        let settings = self.ai_panel.settings.clone();
+        let tx = self.ai_tx.clone();
+        self.ai_agent_plan_state = Some(AiAgentPlanState::Finalizing(plan.clone()));
+        self.ai_panel.status = "agent finalizing evidence-based answer".to_string();
+        self.project_message = "Agent collected evidence; asking AI for final answer".to_string();
+        tokio::spawn(async move {
+            let result = finalize_agent_execution_with_ollama(settings, prompt, plan, evidence).await;
+            let _ = tx.send(AiEvent::AgentExecutionComplete { result }).await;
+        });
     }
 
     fn handle_proxy_event(&mut self, event: ProxyEvent) {
@@ -1020,6 +1027,22 @@ impl App {
                     self.ai_agent_plan_state = Some(AiAgentPlanState::Error(error.clone()));
                     self.ai_panel.messages.push(AiMessage::assistant(format!("## Agent planning failed\n\n{error}")));
                     self.ai_panel.status = format!("agent planning error: {error}");
+                }
+            },
+            AiEvent::AgentExecutionComplete { result } => match result {
+                Ok(report) => {
+                    self.ai_agent_plan_state = Some(AiAgentPlanState::Complete(report.clone()));
+                    self.ai_panel.messages.push(AiMessage::assistant(report));
+                    self.ai_panel.status = "agent workflow complete".to_string();
+                    self.ai_panel.is_waiting = false;
+                    self.project_message = "Agent workflow completed with evidence-based final answer".to_string();
+                }
+                Err(error) => {
+                    self.ai_agent_plan_state = Some(AiAgentPlanState::Error(error.clone()));
+                    self.ai_panel.messages.push(AiMessage::assistant(format!("## Agent execution failed\n\n{error}")));
+                    self.ai_panel.status = format!("agent execution error: {error}");
+                    self.ai_panel.is_waiting = false;
+                    self.project_message = format!("Agent execution failed: {error}");
                 }
             },
             AiEvent::OllamaModelsComplete { result } => match result {
@@ -2532,7 +2555,7 @@ impl App {
         )
     }
 
-    fn agent_execution_report(&self, plan: &AiAgentPlan) -> String {
+    fn agent_execution_evidence(&self, plan: &AiAgentPlan) -> String {
         let flows = self.flow_store.snapshot();
         let websockets = self.flow_store.websocket_snapshot();
         let selected_flow = self
@@ -2540,35 +2563,59 @@ impl App {
             .and_then(|index| flows.get(index).cloned());
         let selected_flow_md = selected_flow
             .as_ref()
-            .map(|flow| format!("- Flow #{}: `{} {}` status `{:?}`", flow.id, flow.method, flow.uri, flow.status))
+            .map(|flow| {
+                format!(
+                    "- Flow #{}: `{} {}` status `{:?}` response_len `{}`",
+                    flow.id,
+                    flow.method,
+                    flow.uri,
+                    flow.status,
+                    flow.response_len()
+                )
+            })
             .unwrap_or_else(|| "- No selected flow available".to_string());
+        let top_flows = flows
+            .iter()
+            .rev()
+            .take(10)
+            .map(|flow| format!("- #{} `{} {}` status `{:?}` len `{}`", flow.id, flow.method, flow.uri, flow.status, flow.response_len()))
+            .collect::<Vec<_>>()
+            .join("\n");
         let top_findings = self
             .findings
             .iter()
-            .take(5)
-            .map(|finding| format!("- `{}` {} {}", finding.severity.label(), finding.issue_name, finding.url))
+            .take(12)
+            .map(|finding| format!("- id `{}` severity `{}` confidence `{}` issue `{}` url `{}` evidence `{}`", finding.id, finding.severity.label(), finding.confidence.label(), finding.issue_name, finding.url, finding.evidence_json.chars().take(300).collect::<String>()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let websocket_sample = websockets
+            .iter()
+            .take(20)
+            .map(|frame| format!("- ws#{} flow`{:?}` {} {} bytes opcode `{}` url `{}` preview `{}`", frame.id, frame.flow_id, frame.direction.label(), frame.length, frame.opcode, frame.url, frame.payload_preview.chars().take(200).collect::<String>()))
             .collect::<Vec<_>>()
             .join("\n");
         let selected_agents = plan
             .selected_agents
             .iter()
-            .map(|agent| format!("- **{}** — {}", agent.name, agent.reason))
+            .map(|agent| format!("- {} — {}", agent.name, agent.reason))
             .collect::<Vec<_>>()
             .join("\n");
         let steps = plan
             .steps
             .iter()
-            .map(|step| format!("- ✅ Step {}: **{}** → {} (`{}`)", step.order, step.tab, step.feature, step.tool))
+            .map(|step| format!("- Step {}: tab `{}` feature `{}` tool `{}` agent `{}` risk `{}`", step.order, step.tab, step.feature, step.tool, step.agent, step.risk))
             .collect::<Vec<_>>()
             .join("\n");
         format!(
-            "## Agent Execution Result\n\n### Selected Agents\n{}\n\n### Executed Passive/Local Steps\n{}\n\n### Evidence Pack\n{}\n- Scanner findings available: {}\n- WebSocket frames available: {}\n\n### Finding Snapshot\n{}\n\n### Safety Governor\n- Passive/local data was inspected.\n- Actions that send traffic or modify targets are not executed automatically.\n- If the plan requires active scanning, Repeater sends, Intruder runs, or WebSocket replay, use the dedicated tab approval flow.\n",
-            if selected_agents.is_empty() { "- No custom agent selected by router" } else { selected_agents.as_str() },
-            if steps.is_empty() { "- No executable steps returned; plan kept as guidance" } else { steps.as_str() },
+            "Agent execution evidence pack\n\nUser-approved plan:\n{}\n\nSelected agents:\n{}\n\nExecuted passive/local steps:\n{}\n\nSelected proxy flow:\n{}\n\nRecent proxy flows:\n{}\n\nScanner findings:\n{}\n\nWebSocket frame sample:\n{}\n\nBrain context:\n{}\n\nSafety constraints:\n- No active scan, Repeater send, Intruder run, WebSocket replay, deletion, or remote traffic action was executed by this agent step.\n- Only local/passive app state was inspected.\n",
+            plan.plan_markdown,
+            if selected_agents.is_empty() { "- none selected" } else { selected_agents.as_str() },
+            if steps.is_empty() { "- no concrete tool steps returned" } else { steps.as_str() },
             selected_flow_md,
-            self.findings.len(),
-            websockets.len(),
-            if top_findings.is_empty() { "- No findings loaded" } else { top_findings.as_str() },
+            if top_flows.is_empty() { "- no proxy flows captured" } else { top_flows.as_str() },
+            if top_findings.is_empty() { "- no findings loaded" } else { top_findings.as_str() },
+            if websocket_sample.is_empty() { "- no websocket frames captured" } else { websocket_sample.as_str() },
+            self.relevant_brain_context(&self.ai_agent_current_prompt).unwrap_or_else(|| "- no relevant brain sections matched".to_string()),
         )
     }
 
@@ -2635,6 +2682,7 @@ impl App {
         self.ai_panel.is_waiting = true;
 
         if self.ai_prompt_mode == AiPromptMode::Agent {
+            self.ai_agent_current_prompt = prompt.clone();
             self.ai_agent_plan_state = Some(AiAgentPlanState::Planning);
             self.ai_panel.status = format!("planning agent workflow with {}", self.ai_panel.settings.model);
             self.project_message = "Agent mode: building execution plan".to_string();
@@ -5187,6 +5235,55 @@ async fn fetch_ollama_models(settings: crate::models::ai::AiSettings) -> Result<
     Ok(models)
 }
 
+async fn finalize_agent_execution_with_ollama(
+    settings: crate::models::ai::AiSettings,
+    user_prompt: String,
+    plan: AiAgentPlan,
+    evidence: String,
+) -> Result<String, String> {
+    let messages = vec![
+        OllamaMessage {
+            role: "system".to_string(),
+            content: ai_agent_finalizer_system_prompt(),
+        },
+        OllamaMessage {
+            role: "user".to_string(),
+            content: format!(
+                "Original user prompt:\n{}\n\nApproved agent plan JSON/markdown:\n{}\n\nCollected execution evidence:\n{}",
+                user_prompt,
+                serde_json::to_string_pretty(&plan).unwrap_or_else(|_| plan.plan_markdown.clone()),
+                evidence
+            ),
+        },
+    ];
+    let request = OllamaChatRequest {
+        model: settings.model,
+        stream: false,
+        messages,
+        options: OllamaOptions { temperature: settings.temperature },
+    };
+    let url = format!("{}/api/chat", settings.ollama_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("ollama returned {status}: {body}"));
+    }
+    let response: OllamaChatResponse = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    response
+        .message
+        .map(|message| message.content)
+        .ok_or_else(|| "ollama response did not include a message".to_string())
+}
+
 async fn plan_ai_agents_with_ollama(
     settings: crate::models::ai::AiSettings,
     prompt: String,
@@ -7105,6 +7202,11 @@ fn priority_from_label(label: &str) -> &'static str {
         4 => "P4",
         _ => "P4",
     }
+}
+
+fn ai_agent_finalizer_system_prompt() -> String {
+    "You are Proxima Agent Execution Finalizer. Produce the final user-facing result from the approved plan and collected evidence. Answer the user's original prompt directly. Do not invent findings that are not present in evidence. Clearly state when evidence is missing. Separate Observed Evidence, Interpretation, Confidence, and Next Steps. If a requested active action was not executed, say it was not executed and explain what passive/local evidence was used. Return clean Markdown only."
+        .to_string()
 }
 
 fn ai_agent_router_system_prompt() -> String {
