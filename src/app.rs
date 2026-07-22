@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::TcpListener as StdTcpListener, time::Instant};
+use std::{collections::HashMap, net::TcpListener as StdTcpListener, path::PathBuf, time::Instant};
 
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -206,6 +206,10 @@ pub struct App {
     pub project_panel_selected: usize,
     pub project_panel_input: String,
     pub brain_markdown: String,
+    pub brain_file_path: PathBuf,
+    pub brain_selected_file: usize,
+    pub brain_new_file_input: Option<String>,
+    pub brain_scroll: u16,
     pub brain_dirty: bool,
     pub brain_message: String,
     pub brain_search: String,
@@ -504,7 +508,8 @@ impl App {
         let intruder_results = database.load_intruder_results().unwrap_or_default();
         let findings = database.load_findings().unwrap_or_default();
         let project_message = format!("Project: {}", database.path().display());
-        let brain_markdown = load_brain_for_project(database.path());
+        let brain_file_path = brain_path_for_project(database.path());
+        let brain_markdown = load_brain_from_path(&brain_file_path);
         Self {
             current_tab: Tab::Ai,
             should_quit: false,
@@ -540,6 +545,10 @@ impl App {
             project_panel_selected: 0,
             project_panel_input: String::new(),
             brain_markdown,
+            brain_file_path,
+            brain_selected_file: 0,
+            brain_new_file_input: None,
+            brain_scroll: 0,
             brain_dirty: false,
             brain_message: "Brain loaded".to_string(),
             brain_search: String::new(),
@@ -1173,9 +1182,34 @@ impl App {
     }
 
     fn handle_brain_key(&mut self, key: KeyEvent) -> bool {
+        if self.brain_new_file_input.is_some() {
+            return self.handle_brain_new_file_key(key);
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                 self.save_brain();
+                true
+            }
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) | (KeyCode::F(2), _) => {
+                self.brain_new_file_input = Some(String::new());
+                self.brain_message = "New Markdown file: type filename, Enter create, Esc cancel".to_string();
+                true
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) => {
+                self.select_next_brain_file();
+                true
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) => {
+                self.select_previous_brain_file();
+                true
+            }
+            (KeyCode::PageDown, _) => {
+                self.brain_scroll = self.brain_scroll.saturating_add(10);
+                true
+            }
+            (KeyCode::PageUp, _) => {
+                self.brain_scroll = self.brain_scroll.saturating_sub(10);
                 true
             }
             (KeyCode::Backspace, _) => {
@@ -1197,14 +1231,138 @@ impl App {
         }
     }
 
+    fn handle_brain_new_file_key(&mut self, key: KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('c'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => false,
+            (KeyCode::Esc, _) => {
+                self.brain_new_file_input = None;
+                self.brain_message = "New Markdown file cancelled".to_string();
+                true
+            }
+            (KeyCode::Enter, _) => {
+                self.create_brain_file_from_input();
+                true
+            }
+            (KeyCode::Backspace, _) => {
+                if let Some(input) = &mut self.brain_new_file_input {
+                    input.pop();
+                }
+                true
+            }
+            (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT) => {
+                if let Some(input) = &mut self.brain_new_file_input {
+                    input.push(ch);
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
     fn save_brain(&mut self) {
-        let path = brain_path_for_project(self.database.path());
-        match std::fs::write(&path, &self.brain_markdown) {
+        match std::fs::write(&self.brain_file_path, &self.brain_markdown) {
             Ok(()) => {
                 self.brain_dirty = false;
-                self.brain_message = format!("Brain saved to {}", path.display());
+                self.brain_message = format!("Brain saved to {}", self.brain_file_path.display());
             }
             Err(error) => self.brain_message = format!("Brain save failed: {error}"),
+        }
+    }
+
+    pub fn brain_markdown_files(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if let Some(parent) = self.database.path().parent() {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                files = entries
+                    .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                    .filter(|path| path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.eq_ignore_ascii_case("md")).unwrap_or(false))
+                    .collect::<Vec<_>>();
+            }
+        }
+        if !files.iter().any(|path| path == &self.brain_file_path) {
+            files.push(self.brain_file_path.clone());
+        }
+        files.sort();
+        files
+    }
+
+    fn refresh_brain_selected_file(&mut self) {
+        let files = self.brain_markdown_files();
+        self.brain_selected_file = files
+            .iter()
+            .position(|path| path == &self.brain_file_path)
+            .unwrap_or(0);
+    }
+
+    fn select_next_brain_file(&mut self) {
+        let files = self.brain_markdown_files();
+        if files.is_empty() {
+            return;
+        }
+        let next = (self.brain_selected_file + 1).min(files.len() - 1);
+        self.load_brain_file(files[next].clone(), next);
+    }
+
+    fn select_previous_brain_file(&mut self) {
+        let files = self.brain_markdown_files();
+        if files.is_empty() {
+            return;
+        }
+        let next = self.brain_selected_file.saturating_sub(1);
+        self.load_brain_file(files[next].clone(), next);
+    }
+
+    fn load_brain_file(&mut self, path: PathBuf, index: usize) {
+        if self.brain_dirty {
+            self.save_brain();
+        }
+        self.brain_markdown = load_brain_from_path(&path);
+        self.brain_file_path = path.clone();
+        self.brain_selected_file = index;
+        self.brain_scroll = 0;
+        self.brain_dirty = false;
+        self.brain_message = format!("Loaded {}", path.display());
+    }
+
+    fn create_brain_file_from_input(&mut self) {
+        let input = self
+            .brain_new_file_input
+            .as_ref()
+            .map(|value| value.trim())
+            .unwrap_or_default();
+        let file_name = if input.is_empty() {
+            format!("brain-{}.md", chrono::Local::now().format("%Y%m%d-%H%M%S"))
+        } else if input.ends_with(".md") {
+            input.to_string()
+        } else {
+            format!("{input}.md")
+        };
+        let path = self
+            .database
+            .path()
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(sanitize_brain_filename(&file_name));
+        if path.exists() {
+            self.brain_message = format!("Markdown file already exists: {}", path.display());
+            return;
+        }
+        if self.brain_dirty {
+            self.save_brain();
+        }
+        let title = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("Brain");
+        let initial = format!("# {title}\n\n");
+        match std::fs::write(&path, &initial) {
+            Ok(()) => {
+                self.brain_new_file_input = None;
+                self.brain_markdown = initial;
+                self.brain_file_path = path.clone();
+                self.refresh_brain_selected_file();
+                self.brain_scroll = 0;
+                self.brain_dirty = false;
+                self.brain_message = format!("Created {}", path.display());
+            }
+            Err(error) => self.brain_message = format!("Create Markdown file failed: {error}"),
         }
     }
 
@@ -1488,7 +1646,10 @@ impl App {
         self.scope_engine = ScopeEngine::new(self.database.load_scope_rules().unwrap_or_default());
         self.intruder_results = self.database.load_intruder_results().unwrap_or_default();
         self.findings = self.database.load_findings().unwrap_or_default();
-        self.brain_markdown = load_brain_for_project(self.database.path());
+        self.brain_file_path = brain_path_for_project(self.database.path());
+        self.brain_markdown = load_brain_from_path(&self.brain_file_path);
+        self.refresh_brain_selected_file();
+        self.brain_scroll = 0;
         self.brain_dirty = false;
         self.brain_message = "Brain loaded".to_string();
         self.brain_search.clear();
@@ -4040,6 +4201,11 @@ impl App {
                 MouseEventKind::ScrollUp => self.ai_conversation_scroll = self.ai_conversation_scroll.saturating_sub(3),
                 _ => {}
             },
+            Tab::Brain => match mouse.kind {
+                MouseEventKind::ScrollDown => self.brain_scroll = self.brain_scroll.saturating_add(3),
+                MouseEventKind::ScrollUp => self.brain_scroll = self.brain_scroll.saturating_sub(3),
+                _ => {}
+            },
             Tab::Proxy => match mouse.kind {
                 MouseEventKind::ScrollDown => {
                     self.request_scroll = self.request_scroll.saturating_add(1);
@@ -4861,10 +5027,32 @@ fn brain_path_for_project(project_path: &std::path::Path) -> std::path::PathBuf 
     project_path.with_extension("brain.md")
 }
 
-fn load_brain_for_project(project_path: &std::path::Path) -> String {
-    std::fs::read_to_string(brain_path_for_project(project_path)).unwrap_or_else(|_| {
+fn load_brain_from_path(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|_| {
         "# Proxima Brain\n\nWrite any Markdown knowledge here: CTF writeups, bug bounty notes, payload tricks, report templates, target context, API docs, auth flows, and personal methodology.\n".to_string()
     })
+}
+
+fn load_brain_for_project(project_path: &std::path::Path) -> String {
+    load_brain_from_path(&brain_path_for_project(project_path))
+}
+
+fn sanitize_brain_filename(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            output.push(ch);
+        } else if ch.is_whitespace() {
+            output.push('-');
+        }
+    }
+    if output.is_empty() {
+        "brain.md".to_string()
+    } else if output.ends_with(".md") {
+        output
+    } else {
+        format!("{output}.md")
+    }
 }
 
 fn brain_sections(markdown: &str) -> Vec<String> {

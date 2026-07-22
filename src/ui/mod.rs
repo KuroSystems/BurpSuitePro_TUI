@@ -5,7 +5,6 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs, Wrap},
     Frame,
 };
-use ratatui_textarea::TextArea;
 
 mod active_tab;
 mod ai_tab;
@@ -285,26 +284,23 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(layout[0]);
 
-    let mut textarea = TextArea::from(
-        app.brain_markdown
-            .split('\n')
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>(),
+    let editor_lines = app
+        .brain_markdown
+        .split('\n')
+        .map(|line| Line::raw(line.to_string()))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(editor_lines)
+            .block(Block::default().title(" Proxima Brain Markdown ").borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)))
+            .scroll((app.brain_scroll, 0))
+            .wrap(Wrap { trim: false }),
+        columns[0],
     );
-    textarea.set_block(
-        Block::default()
-            .title(" Proxima Brain Markdown ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta)),
-    );
-    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
-    textarea.set_cursor_line_style(Style::default().bg(Color::Black));
-    frame.render_widget(&textarea, columns[0]);
 
     let markdown_files = brain_markdown_file_lines(app);
     frame.render_widget(
         Paragraph::new(markdown_files)
-            .block(Block::default().title(" Markdown Files (.md) ").borders(Borders::ALL))
+            .block(Block::default().title(" Markdown Files (.md)  Ctrl+N new  ↑/↓ switch ").borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         columns[1],
     );
@@ -314,9 +310,15 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
     let footer = vec![
         Line::from(vec![
             Span::styled(" Ctrl+S ", Style::default().fg(Color::Black).bg(Color::Green)),
-            Span::raw(" save brain  "),
+            Span::raw(" save  "),
+            Span::styled(" Ctrl+N/F2 ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::raw(" new .md  "),
+            Span::styled(" ↑/↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::raw(" switch file  "),
+            Span::styled(" PgUp/PgDn ", Style::default().fg(Color::Black).bg(Color::Magenta)),
+            Span::raw(" scroll  "),
             Span::styled(if app.brain_dirty { " unsaved " } else { " saved " }, Style::default().fg(Color::Black).bg(if app.brain_dirty { Color::Yellow } else { Color::Green })),
-            Span::raw(format!(" sections: {section_count} words: {words}  paste preserves original Markdown/code formatting")),
+            Span::raw(format!(" sections: {section_count} words: {words}")),
         ]),
         Line::styled(app.brain_message.clone(), Style::default().fg(Color::DarkGray)),
     ];
@@ -328,32 +330,27 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
 
 fn brain_markdown_file_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let brain_path = app.database.path().with_extension("brain.md");
     lines.push(Line::styled("Project directory Markdown files", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
-    lines.push(Line::raw(""));
-    if let Some(parent) = app.database.path().parent() {
-        if let Ok(entries) = std::fs::read_dir(parent) {
-            let mut files = entries
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.eq_ignore_ascii_case("md")).unwrap_or(false))
-                .collect::<Vec<_>>();
-            files.sort();
-            for path in files {
-                let is_active = path == brain_path;
-                let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("<invalid>");
-                lines.push(Line::from(vec![
-                    Span::styled(if is_active { "▶ " } else { "  " }, Style::default().fg(Color::Magenta)),
-                    Span::styled(label.to_string(), Style::default().fg(if is_active { Color::Green } else { Color::Gray }).add_modifier(if is_active { Modifier::BOLD } else { Modifier::empty() })),
-                ]));
-            }
-        }
+    if let Some(input) = &app.brain_new_file_input {
+        lines.push(Line::styled(format!("new file: {input}_"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
     }
-    if lines.len() <= 2 {
+    lines.push(Line::raw(""));
+    let files = app.brain_markdown_files();
+    for (index, path) in files.iter().enumerate() {
+        let is_selected = index == app.brain_selected_file.min(files.len().saturating_sub(1));
+        let is_active = path == &app.brain_file_path;
+        let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("<invalid>");
+        lines.push(Line::from(vec![
+            Span::styled(if is_selected { "▶ " } else { "  " }, Style::default().fg(Color::Magenta)),
+            Span::styled(label.to_string(), Style::default().fg(if is_active { Color::Green } else { Color::Gray }).add_modifier(if is_active || is_selected { Modifier::BOLD } else { Modifier::empty() })),
+        ]));
+    }
+    if files.is_empty() {
         lines.push(Line::styled("No .md files found beside this project yet.", Style::default().fg(Color::DarkGray)));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("Active Brain file", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
-    lines.push(Line::raw(brain_path.display().to_string()));
+    lines.push(Line::raw(app.brain_file_path.display().to_string()));
     lines
 }
 
