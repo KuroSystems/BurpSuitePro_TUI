@@ -21,6 +21,7 @@ ratatui = "0.30"
 ratatui-textarea = "0.9"
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 regex = "1"
+pulldown-cmark = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }
 md-5 = "0.10"
 rmp-serde = "1.3"

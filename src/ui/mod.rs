@@ -1,3 +1,4 @@
+use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options as MarkdownOptions, Parser, Tag};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -351,29 +352,179 @@ fn render_brain(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_brain_preview_lines(markdown: &str) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let mut in_code = false;
-    for raw in markdown.lines() {
-        let line = raw.trim_end();
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_code = !in_code;
-            lines.push(Line::styled(if in_code { " code " } else { "" }, Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)));
-        } else if in_code {
-            lines.push(Line::styled(format!("  {line}"), Style::default().fg(Color::LightCyan).bg(Color::Black)));
-        } else if let Some(text) = trimmed.strip_prefix("# ") {
-            lines.push(Line::styled(text.to_string(), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
-        } else if let Some(text) = trimmed.strip_prefix("## ") {
-            lines.push(Line::styled(text.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
-        } else if let Some(text) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-            lines.push(Line::from(vec![Span::styled("  • ", Style::default().fg(Color::Cyan)), Span::raw(text.to_string())]));
-        } else if trimmed.starts_with('|') && trimmed.ends_with('|') {
-            lines.push(Line::styled(trimmed.to_string(), Style::default().fg(Color::Yellow)));
-        } else {
-            lines.push(Line::raw(line.to_string()));
+    let mut options = MarkdownOptions::empty();
+    options.insert(MarkdownOptions::ENABLE_TABLES);
+    options.insert(MarkdownOptions::ENABLE_STRIKETHROUGH);
+    options.insert(MarkdownOptions::ENABLE_TASKLISTS);
+    let parser = Parser::new_ext(markdown, options);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut style_stack = vec![Style::default()];
+    let mut list_depth = 0usize;
+    let mut ordered_stack: Vec<u64> = Vec::new();
+    let mut table_row: Vec<String> = Vec::new();
+    let mut table_cell = String::new();
+    let mut in_table_cell = false;
+
+    fn current_style(stack: &[Style]) -> Style {
+        *stack.last().unwrap_or(&Style::default())
+    }
+
+    fn flush_spans(lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>) {
+        if !spans.is_empty() {
+            lines.push(Line::from(std::mem::take(spans)));
         }
     }
+
+    for event in parser {
+        match event {
+            MarkdownEvent::Start(tag) => match tag {
+                Tag::Paragraph => {}
+                Tag::Heading(level, _, _) => {
+                    flush_spans(&mut lines, &mut spans);
+                    let style = match level as u32 {
+                        1 => Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        2 => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        _ => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    };
+                    style_stack.push(style);
+                }
+                Tag::BlockQuote => {
+                    flush_spans(&mut lines, &mut spans);
+                    spans.push(Span::styled("▌ ", Style::default().fg(Color::DarkGray)));
+                    style_stack.push(Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC));
+                }
+                Tag::CodeBlock(kind) => {
+                    flush_spans(&mut lines, &mut spans);
+                    let label = match kind {
+                        CodeBlockKind::Fenced(lang) if !lang.is_empty() => format!(" {} ", lang),
+                        _ => " code ".to_string(),
+                    };
+                    lines.push(Line::styled(label, Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)));
+                    style_stack.push(Style::default().fg(Color::LightCyan).bg(Color::Black));
+                }
+                Tag::List(start) => {
+                    list_depth += 1;
+                    if let Some(start) = start {
+                        ordered_stack.push(start);
+                    } else {
+                        ordered_stack.push(0);
+                    }
+                }
+                Tag::Item => {
+                    flush_spans(&mut lines, &mut spans);
+                    let indent = "  ".repeat(list_depth.saturating_sub(1));
+                    let marker = if let Some(last) = ordered_stack.last_mut() {
+                        if *last == 0 {
+                            "• ".to_string()
+                        } else {
+                            let marker = format!("{}. ", *last);
+                            *last += 1;
+                            marker
+                        }
+                    } else {
+                        "• ".to_string()
+                    };
+                    spans.push(Span::styled(format!("{indent}{marker}"), Style::default().fg(Color::Cyan)));
+                }
+                Tag::Emphasis => style_stack.push(current_style(&style_stack).add_modifier(Modifier::ITALIC)),
+                Tag::Strong => style_stack.push(current_style(&style_stack).add_modifier(Modifier::BOLD)),
+                Tag::Strikethrough => style_stack.push(current_style(&style_stack).add_modifier(Modifier::CROSSED_OUT)),
+                Tag::Link(_, _, _) => style_stack.push(current_style(&style_stack).fg(Color::Blue).add_modifier(Modifier::UNDERLINED)),
+                Tag::Table(_) => {
+                    flush_spans(&mut lines, &mut spans);
+                }
+                Tag::TableHead | Tag::TableRow => table_row.clear(),
+                Tag::TableCell => {
+                    in_table_cell = true;
+                    table_cell.clear();
+                }
+                _ => {}
+            },
+            MarkdownEvent::End(tag) => match tag {
+                Tag::Paragraph => {
+                    flush_spans(&mut lines, &mut spans);
+                    lines.push(Line::raw(""));
+                }
+                Tag::Heading(_, _, _) => {
+                    style_stack.pop();
+                    flush_spans(&mut lines, &mut spans);
+                    lines.push(Line::raw(""));
+                }
+                Tag::BlockQuote | Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Link(_, _, _) | Tag::CodeBlock(_) => {
+                    style_stack.pop();
+                    if matches!(tag, Tag::CodeBlock(_)) {
+                        lines.push(Line::raw(""));
+                    }
+                }
+                Tag::List(_) => {
+                    list_depth = list_depth.saturating_sub(1);
+                    ordered_stack.pop();
+                    if list_depth == 0 {
+                        lines.push(Line::raw(""));
+                    }
+                }
+                Tag::Item => flush_spans(&mut lines, &mut spans),
+                Tag::TableCell => {
+                    in_table_cell = false;
+                    table_row.push(table_cell.trim().to_string());
+                }
+                Tag::TableHead => {
+                    if !table_row.is_empty() {
+                        lines.push(render_markdown_table_row(&table_row, true));
+                        lines.push(Line::styled(
+                            format!("  {}", table_row.iter().map(|cell| "─".repeat(cell.len().max(3))).collect::<Vec<_>>().join("─┼─")),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    table_row.clear();
+                }
+                Tag::TableRow => {
+                    if !table_row.is_empty() {
+                        lines.push(render_markdown_table_row(&table_row, false));
+                    }
+                    table_row.clear();
+                }
+                Tag::Table(_) => lines.push(Line::raw("")),
+                _ => {}
+            },
+            MarkdownEvent::Text(text) => {
+                if in_table_cell {
+                    table_cell.push_str(&text);
+                } else {
+                    spans.push(Span::styled(text.to_string(), current_style(&style_stack)));
+                }
+            }
+            MarkdownEvent::Code(code) => spans.push(Span::styled(format!(" {code} "), Style::default().fg(Color::Black).bg(Color::Green))),
+            MarkdownEvent::SoftBreak => spans.push(Span::raw(" ")),
+            MarkdownEvent::HardBreak => flush_spans(&mut lines, &mut spans),
+            MarkdownEvent::Rule => {
+                flush_spans(&mut lines, &mut spans);
+                lines.push(Line::styled("─".repeat(48), Style::default().fg(Color::DarkGray)));
+            }
+            MarkdownEvent::Html(html) => spans.push(Span::styled(html.to_string(), Style::default().fg(Color::Yellow))),
+            MarkdownEvent::TaskListMarker(checked) => spans.push(Span::styled(if checked { "☑ " } else { "☐ " }, Style::default().fg(Color::Cyan))),
+            _ => {}
+        }
+    }
+    flush_spans(&mut lines, &mut spans);
     lines
+}
+
+fn render_markdown_table_row(cells: &[String], header: bool) -> Line<'static> {
+    let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
+    for (index, cell) in cells.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            cell.clone(),
+            Style::default().fg(if header { Color::Green } else { Color::Yellow }).add_modifier(if header { Modifier::BOLD } else { Modifier::empty() }),
+        ));
+    }
+    spans.push(Span::styled(" │", Style::default().fg(Color::DarkGray)));
+    Line::from(spans)
 }
 
 fn brain_intelligence_lines(app: &App) -> Vec<Line<'static>> {
