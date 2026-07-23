@@ -4,4 +4,4 @@ pub mod issue;
 
 pub use active::{run_safe_active_scan, ActiveScanTarget, ActiveScannerEvent};
 pub use engine::PassiveScanner;
-pub use issue::{Confidence, Finding, IssueDefinition, PassiveCheck, Severity};
+pub use issue::{Confidence, Finding, Severity};

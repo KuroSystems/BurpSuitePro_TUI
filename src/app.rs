@@ -41,8 +41,8 @@ pub enum Tab {
 
 impl Tab {
     pub const ALL: [Self; 12] = [
-        Self::Proxy,
         Self::Ai,
+        Self::Proxy,
         Self::Repeater,
         Self::Scope,
         Self::Intruder,
@@ -187,7 +187,7 @@ impl App {
         ai_tx: mpsc::Sender<AiEvent>,
     ) -> Self {
         let mut proxy_config = ProxyConfig::default();
-        let mut database = Database::open_default().expect("failed to open default project database");
+        let database = Database::open_default().expect("failed to open default project database");
         if let Ok(Some(listen_addr)) = database.load_setting("proxy.listen_addr") {
             if let Ok(listen_addr) = listen_addr.parse() {
                 proxy_config.listen_addr = listen_addr;

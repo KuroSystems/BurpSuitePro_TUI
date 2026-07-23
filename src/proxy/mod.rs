@@ -4,8 +4,8 @@ pub mod server;
 
 use std::{env, net::SocketAddr, path::PathBuf};
 
-pub use ca::{ensure_ca_certificate, install_ca_system_trust, CaAuthority, DomainCertificate};
-pub use handler::{Decision, InterceptHandler, LoggingHandler, ProxyRequest, ProxyResponse};
+pub use ca::{CaAuthority};
+pub use handler::{InterceptHandler, LoggingHandler, ProxyRequest, ProxyResponse};
 pub use server::run_proxy;
 
 #[derive(Debug, Clone)]
