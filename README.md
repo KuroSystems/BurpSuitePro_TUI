@@ -73,7 +73,7 @@ What it does, in order of how much it matters:
   fuzzer finish the job.
 - **Hash-chained audit log.** Every allow, deny and halt is an appended JSON line
   whose hash covers the previous line, so edited or reordered entries are detectable
-  (`proxima::policy::audit::verify`). It proves *integrity*, not *authorship*:
+  (`policy::audit::verify` in `src/policy/audit.rs`). It proves *integrity*, not *authorship*:
   whoever can write the file can rewrite the chain, and tail truncation needs an
   external anchor to detect. Said plainly because a log people over-trust is worse
   than no log.

@@ -619,6 +619,30 @@ scope:
             .is_allowed());
     }
 
+    /// The gate and the log have to be one object: a decision that is enforced but
+    /// not recorded is unprovable after the fact.
+    #[test]
+    fn decisions_are_written_to_the_audit_chain() {
+        let path = std::env::temp_dir().join(format!(
+            "proxima-policy-audit-{}-{}.log",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let envelope = CompiledEnvelope::parse(BASE).expect("valid envelope");
+        let log = AuditLog::open(&path).expect("audit log opens");
+        let policy = Policy::enforced(envelope, Some(log), "test".to_string(), None);
+
+        policy.authorize(Traffic::Proxied, "GET", "https://staging.example.test/api");
+        policy.authorize(Traffic::Proxied, "GET", "https://prod.example.test/api");
+        policy.flush_audit();
+
+        assert_eq!(policy.audit_entries(), 2);
+        assert_eq!(audit::verify(&path).expect("chain verifies"), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn min_delay_comes_from_the_envelope() {
         let policy = enforced(&format!("{BASE}\nlimits:\n  max_rps: 10\n"));
