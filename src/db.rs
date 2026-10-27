@@ -37,6 +37,11 @@ impl Database {
         }
         let connection = Connection::open(&path)
             .with_context(|| format!("failed to open project database {}", path.display()))?;
+        // The background flow writer holds a second connection to this file. WAL
+        // serializes writers, so a busy timeout turns a lost write into a short wait.
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .context("failed to configure sqlite busy timeout")?;
         let database = Self { path, connection };
         database.init_schema()?;
         let _ = write_last_project_marker(&database.path);

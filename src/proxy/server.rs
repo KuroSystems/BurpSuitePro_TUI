@@ -11,7 +11,7 @@ use hyper::{
     service::service_fn,
     Method, Request, Response, StatusCode, Uri,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use reqwest::Client;
 use rustls::ServerConfig;
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
@@ -169,15 +169,17 @@ where
         .with_no_client_auth()
         .with_single_cert(issued.cert_chain, issued.private_key)
         .wrap_err("failed to build per-domain TLS config")?;
-    // Advertise both HTTP/2 and HTTP/1.1 to clients. The current request
-    // dispatcher is still conservative and accepts HTTP/1.1 upgrades, while
-    // reqwest preserves upstream HTTP/2 support when the origin negotiates it.
     tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
     let tls_stream = acceptor
         .accept(TokioIo::new(upgraded))
         .await
         .wrap_err("failed to complete client TLS handshake")?;
+
+    // The protocol we serve must match the protocol we advertised. Announcing h2
+    // via ALPN and then speaking HTTP/1.1 makes every modern client fail the
+    // handshake (see RFC 7301: the negotiated protocol is binding).
+    let is_h2 = negotiated_uses_h2(tls_stream.get_ref().1.alpn_protocol());
 
     let service = service_fn(move |request| {
         handle_plain_http(
@@ -189,10 +191,22 @@ where
         )
     });
 
-    http1::Builder::new()
-        .serve_connection(TokioIo::new(tls_stream), service)
-        .await
-        .wrap_err("failed to serve HTTPS MITM HTTP/1.1 connection")?;
+    if is_h2 {
+        debug!(%domain, "serving MITM connection over HTTP/2");
+        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(tls_stream), service)
+            .await
+            .wrap_err("failed to serve HTTPS MITM HTTP/2 connection")?;
+    } else {
+        debug!(%domain, "serving MITM connection over HTTP/1.1");
+        http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .serve_connection(TokioIo::new(tls_stream), service)
+            .with_upgrades()
+            .await
+            .wrap_err("failed to serve HTTPS MITM HTTP/1.1 connection")?;
+    }
 
     Ok(())
 }
@@ -338,9 +352,10 @@ async fn forward_request(client: &Client, request: ProxyRequest) -> Result<Proxy
 
 fn proxy_response_to_hyper(response: ProxyResponse) -> Response<ProxyBody> {
     let (parts, body) = response.into_parts();
-    let mut builder = Response::builder()
-        .status(parts.status)
-        .version(parts.version);
+    // The version is deliberately not copied: hyper encodes the response with the
+    // protocol of the connection it is serving (h1 or h2), and an upstream HTTP/1.1
+    // version on an h2 stream is at best redundant and at worst invalid.
+    let mut builder = Response::builder().status(parts.status);
     for (name, value) in parts.headers.iter() {
         builder = builder.header(name.clone(), value.clone());
     }
@@ -349,19 +364,30 @@ fn proxy_response_to_hyper(response: ProxyResponse) -> Response<ProxyBody> {
         .expect("proxy response parts are valid")
 }
 
+/// True only for a real `Connection: Upgrade` + `Upgrade: websocket` handshake.
+/// Checking `Connection` alone records ordinary keep-alive traffic as a WebSocket.
 fn is_websocket_upgrade(request: &ProxyRequest) -> bool {
-    request
+    let upgrade = request
         .headers()
         .get(hyper::header::UPGRADE)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.eq_ignore_ascii_case("websocket"))
-        .unwrap_or(false)
-        || request
-            .headers()
-            .get(hyper::header::CONNECTION)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.to_ascii_lowercase().contains("upgrade"))
-            .unwrap_or(false)
+        .unwrap_or(false);
+
+    let connection_upgrade = request
+        .headers()
+        .get_all(hyper::header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
+
+    upgrade && connection_upgrade
+}
+
+/// The TLS connection must be served with the protocol ALPN selected.
+fn negotiated_uses_h2(negotiated: Option<&[u8]>) -> bool {
+    negotiated == Some(b"h2".as_slice())
 }
 
 fn record_websocket_handshake(flow_store: &FlowStore, flow_id: u64, url: String, body: &Bytes) {
@@ -406,4 +432,88 @@ fn error_response(error: color_eyre::Report) -> Response<ProxyBody> {
         .status(StatusCode::BAD_GATEWAY)
         .body(full_body(Bytes::from(format!("proxy error: {error:#}"))))
         .expect("static error response is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper::header::{CONNECTION, UPGRADE};
+
+    fn request_with(headers: &[(&str, &str)]) -> ProxyRequest {
+        let mut builder = Request::builder().method(Method::GET).uri("https://example.test/");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(Bytes::new()).unwrap()
+    }
+
+    #[test]
+    fn websocket_upgrade_requires_both_headers() {
+        assert!(is_websocket_upgrade(&request_with(&[
+            (CONNECTION.as_str(), "Upgrade"),
+            (UPGRADE.as_str(), "websocket"),
+        ])));
+        assert!(is_websocket_upgrade(&request_with(&[
+            (CONNECTION.as_str(), "keep-alive, Upgrade"),
+            (UPGRADE.as_str(), "WebSocket"),
+        ])));
+    }
+
+    #[test]
+    fn plain_keep_alive_is_not_a_websocket_upgrade() {
+        assert!(!is_websocket_upgrade(&request_with(&[(CONNECTION.as_str(), "keep-alive")])));
+        // `Connection: Upgrade` alone is not a WebSocket handshake.
+        assert!(!is_websocket_upgrade(&request_with(&[(CONNECTION.as_str(), "Upgrade")])));
+        // `Upgrade: websocket` without the connection token is also incomplete.
+        assert!(!is_websocket_upgrade(&request_with(&[(UPGRADE.as_str(), "websocket")])));
+    }
+
+    #[test]
+    fn alpn_selection_decides_the_served_protocol() {
+        assert!(negotiated_uses_h2(Some(b"h2")));
+        assert!(!negotiated_uses_h2(Some(b"http/1.1")));
+        assert!(!negotiated_uses_h2(Some(b"h2c")));
+        assert!(!negotiated_uses_h2(None));
+    }
+
+    #[test]
+    fn hop_by_hop_headers_are_filtered() {
+        for name in [
+            "connection",
+            "keep-alive",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "proxy-connection",
+        ] {
+            let header = hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
+            assert!(is_hop_by_hop_header(&header), "{name} should be hop-by-hop");
+        }
+        for name in ["host", "content-type", "authorization", "accept"] {
+            let header = hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
+            assert!(!is_hop_by_hop_header(&header), "{name} must be forwarded");
+        }
+    }
+
+    #[test]
+    fn absolute_form_uri_is_kept() {
+        let uri: Uri = "http://example.test/a?b=c".parse().unwrap();
+        assert_eq!(normalize_uri(&uri, None).unwrap(), uri);
+    }
+
+    #[test]
+    fn origin_form_uri_is_resolved_against_the_tls_authority() {
+        let uri: Uri = "/a?b=c".parse().unwrap();
+        let resolved = normalize_uri(&uri, Some("example.test:443")).unwrap();
+        assert_eq!(resolved.to_string(), "https://example.test:443/a?b=c");
+    }
+
+    #[test]
+    fn origin_form_uri_without_authority_is_an_error() {
+        let uri: Uri = "/a".parse().unwrap();
+        assert!(normalize_uri(&uri, None).is_err());
+    }
 }

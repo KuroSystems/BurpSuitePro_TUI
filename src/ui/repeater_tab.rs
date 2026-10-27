@@ -86,6 +86,16 @@ fn render_response(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_http_response(frame: &mut Frame, response: &HttpResponse, scroll: u16, area: Rect) {
+    // Repeater re-sends whatever the operator pasted, including `Accept-Encoding`,
+    // so the response may be compressed. Decode it for display only.
+    let view = crate::net::decode::decoded_body(&response.headers, &response.body);
+    let title = if view.status.is_decoded() {
+        format!(" Response · decoded [{}] ", view.codings.join(", "))
+    } else if view.status.is_problem() {
+        format!(" Response · {} ", view.status.label())
+    } else {
+        " Response ".to_string()
+    };
     let mut lines = vec![Line::from(vec![
         Span::styled(
             format!("HTTP {}", response.status),
@@ -105,12 +115,12 @@ fn render_http_response(frame: &mut Frame, response: &HttpResponse, scroll: u16,
         ]));
     }
     lines.push(Line::raw(""));
-    let body_text = render_body(&response.headers, &response.body);
+    let body_text = render_body(&response.headers, &view.body);
     lines.extend(body_text.lines().map(|line| Line::raw(line.to_string())));
 
     let line_count = lines.len();
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().title(" Response ").borders(Borders::ALL))
+        .block(Block::default().title(title).borders(Borders::ALL))
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);

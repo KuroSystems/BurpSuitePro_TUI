@@ -1,0 +1,69 @@
+name: Bug report
+description: Something behaves incorrectly, crashes, or contradicts the docs.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For **security vulnerabilities** do not use this
+        form — follow [SECURITY.md](../blob/main/SECURITY.md) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `proxima-tui --version`, the release tag, or the commit SHA.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, terminal emulator, and anything relevant about the network (proxy, VPN, TLS inspection).
+      placeholder: macOS 15.2, iTerm2 3.5
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smaller the reproduction, the faster this gets fixed.
+      placeholder: |
+        1. Start the proxy from the Settings tab
+        2. Browse to https://example.test over HTTPS
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include log excerpts from `logs/proxima-tui.log` and redact secrets.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Proxy / MITM / TLS
+        - Decoding (gzip, br, zstd, charset)
+        - Repeater
+        - Intruder
+        - Decoder
+        - Comparer
+        - Scanner (passive)
+        - Scanner (active)
+        - Scope rules
+        - WebSockets
+        - Plugins
+        - AI assistant
+        - Project persistence
+        - Performance
+        - Documentation

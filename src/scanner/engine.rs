@@ -91,7 +91,13 @@ impl PassiveScanner {
 
 fn evaluate_check(flow: &HttpFlow, check: &PassiveCheck) -> Option<serde_json::Value> {
     let response_headers = flow.response_headers.as_ref().unwrap_or(&flow.request_headers);
-    let response_body = flow.response_body.as_ref().unwrap_or(&flow.request_body);
+    // Checks must run against decoded bytes: a gzip/br body would otherwise never
+    // match a body regex, which silently turns every passive check into a no-op.
+    let decoded = flow.response_view();
+    let response_body = decoded
+        .as_ref()
+        .map(|view| &view.body)
+        .unwrap_or(&flow.request_body);
 
     match check {
         PassiveCheck::HeaderMissing { name } => {

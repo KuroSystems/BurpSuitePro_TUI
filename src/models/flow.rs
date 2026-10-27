@@ -2,6 +2,8 @@ use bytes::Bytes;
 use chrono::{DateTime, Local};
 use hyper::{HeaderMap, Uri};
 
+use crate::net::decode::{DecodedBody, decoded_body};
+
 #[derive(Debug, Clone)]
 pub struct HttpFlow {
     pub id: u64,
@@ -41,6 +43,20 @@ impl HttpFlow {
 
     pub fn response_len(&self) -> usize {
         self.response_body.as_ref().map(Bytes::len).unwrap_or_default()
+    }
+
+    /// Request body as an operator can read it: `Content-Encoding` removed,
+    /// bounded by `MAX_DECODED_BYTES`. The wire bytes stay in `request_body`.
+    pub fn request_view(&self) -> DecodedBody {
+        decoded_body(&self.request_headers, &self.request_body)
+    }
+
+    /// Response body as an operator can read it. `None` when no response was
+    /// captured at all, so callers can tell "no response" from "empty body".
+    pub fn response_view(&self) -> Option<DecodedBody> {
+        self.response_headers
+            .as_ref()
+            .map(|headers| decoded_body(headers, self.response_body.as_ref().unwrap_or(&Bytes::new())))
     }
 
     pub fn matches_query(&self, query: &str) -> bool {

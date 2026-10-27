@@ -1,7 +1,9 @@
 mod app;
 mod db;
+mod db_writer;
 mod events;
 mod models;
+mod net;
 mod plugins;
 mod proxy;
 mod scanner;

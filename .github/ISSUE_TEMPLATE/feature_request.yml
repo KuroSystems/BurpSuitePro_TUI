@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a capability or a change in behaviour.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `docs/feature-strategy.md` lists five larger directions the project is
+        aiming at. If your idea fits one of them, say which — it makes the design
+        discussion much shorter.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and what does that cost you?
+      placeholder: When a response is brotli-encoded I can't search it in the detail pane...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Smallest useful version
+      description: Describe the minimum change that would solve the problem. Bigger visions are welcome below.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, other tools that do it, or why the obvious approach is wrong here.
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost and risks
+      description: New dependencies, config surface, performance impact, failure modes.
+  - type: dropdown
+    id: strategy
+    attributes:
+      label: Fits which direction?
+      options:
+        - Evidence ledger and deterministic replay
+        - Sandboxed WASM extensions
+        - Grounded local AI
+        - Enforceable engagement envelope
+        - Headless control plane (serve / MCP)
+        - None of these — something else

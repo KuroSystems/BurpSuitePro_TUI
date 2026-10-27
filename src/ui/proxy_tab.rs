@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::{app::App, models::flow::HttpFlow};
+use crate::{app::App, models::flow::HttpFlow, net::decode::{DecodeStatus, DecodedBody}};
 
 pub fn render_proxy_tab(frame: &mut Frame, app: &App, area: Rect) {
     let flows = app.flow_store.snapshot();
@@ -97,17 +97,25 @@ fn render_detail_pane(frame: &mut Frame, app: &App, flow: Option<&HttpFlow>, are
         .split(area);
 
     if let Some(flow) = flow {
+        let request_view = flow.request_view();
         render_message(
             frame,
-            " Request ",
+            &message_title(" Request ", &request_view),
             &flow.request_headers,
-            &flow.request_body,
+            &request_view,
             app.request_scroll,
             panes[0],
         );
 
-        if let (Some(headers), Some(body)) = (&flow.response_headers, &flow.response_body) {
-            render_message(frame, " Response ", headers, body, app.response_scroll, panes[1]);
+        if let (Some(headers), Some(view)) = (&flow.response_headers, flow.response_view()) {
+            render_message(
+                frame,
+                &message_title(" Response ", &view),
+                headers,
+                &view,
+                app.response_scroll,
+                panes[1],
+            );
         } else {
             render_empty(frame, " Response ", "No response captured yet", panes[1]);
         }
@@ -117,11 +125,24 @@ fn render_detail_pane(frame: &mut Frame, app: &App, flow: Option<&HttpFlow>, are
     }
 }
 
+/// Pane title showing how the body was obtained, so a decoded view is never
+/// mistaken for the bytes that were actually on the wire.
+fn message_title(base: &str, view: &DecodedBody) -> String {
+    match view.status {
+        DecodeStatus::NotEncoded => base.to_string(),
+        status if status.is_decoded() => {
+            format!("{base}· {} [{}] ", status.label(), view.codings.join(", "))
+        }
+        status if status.is_problem() => format!("{base}· {} ", status.label()),
+        _ => base.to_string(),
+    }
+}
+
 fn render_message(
     frame: &mut Frame,
     title: &str,
     headers: &HeaderMap,
-    body: &Bytes,
+    view: &DecodedBody,
     scroll: u16,
     area: Rect,
 ) {
@@ -133,7 +154,7 @@ fn render_message(
         ]));
     }
     lines.push(Line::raw(""));
-    let body_text = render_body(headers, body);
+    let body_text = render_body(headers, &view.body);
     lines.extend(body_text.lines().map(|line| Line::raw(line.to_string())));
 
     let line_count = lines.len();

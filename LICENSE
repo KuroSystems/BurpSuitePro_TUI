@@ -1,0 +1,33 @@
+# License
+
+Proxima is dual-licensed under either of
+
+- Apache License, Version 2.0 — see [`LICENSE-APACHE`](LICENSE-APACHE)
+- MIT License — see [`LICENSE-MIT`](LICENSE-MIT)
+
+at your option.
+
+## Why dual licensing
+
+- **Apache-2.0** gives companies an explicit patent grant, which is why many
+  security teams require it before they will depend on a tool.
+- **MIT** keeps the tool trivially embeddable for individuals, scripts, and
+  teaching material.
+
+You only need to comply with one of them.
+
+## Contribution licensing
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this project by you, as defined in the Apache-2.0 license, shall
+be dual-licensed as above, without any additional terms or conditions.
+
+By opening a pull request you confirm you have the right to submit the work under
+these terms. There is no separate CLA.
+
+## Third-party assets
+
+Bundled scanner definitions under `resources/passive/` describe well-known HTTP
+behaviours and reference public documentation (MDN, OWASP). They are original
+text released under the same dual license. No third-party scanner rulesets are
+vendored.

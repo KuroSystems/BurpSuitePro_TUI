@@ -7,6 +7,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     db::Database,
+    db_writer::DbWriter,
     events::{Event, ProxyEvent, RepeaterEvent},
     models::{
         ai::{AiContext, AiEvent, AiMessage, AiPanelState, OllamaChatRequest, OllamaChatResponse, OllamaMessage, OllamaOptions, QUICK_PROMPTS},
@@ -120,6 +121,7 @@ pub struct App {
     pub renaming_repeater: bool,
     pub rename_buffer: String,
     pub database: Database,
+    pub db_writer: DbWriter,
     pub project_message: String,
     pub scope_engine: ScopeEngine,
     pub selected_scope_rule: usize,
@@ -193,6 +195,7 @@ impl App {
                 proxy_config.listen_addr = listen_addr;
             }
         }
+        let db_writer = DbWriter::spawn(database.path()).expect("failed to start database writer");
         let loaded_flows = database.load_flows(10_000, 0).unwrap_or_default();
         flow_store.set_flows(loaded_flows);
         let loaded_repeater_tabs = database.load_repeater_tabs().unwrap_or_default();
@@ -231,6 +234,7 @@ impl App {
             renaming_repeater: false,
             rename_buffer: String::new(),
             database,
+            db_writer,
             project_message,
             scope_engine: ScopeEngine::new(scope_rules),
             selected_scope_rule: 0,
@@ -342,9 +346,8 @@ impl App {
                     self.selected_flow = self.flow_store.len().checked_sub(1);
                 }
                 if let Some(flow) = self.flow_store.get_by_id(id) {
-                    if let Err(error) = self.database.save_flow(&flow) {
-                        self.project_message = format!("Failed to save flow: {error}");
-                    }
+                    // Queued on the writer thread: a slow disk must not stall input.
+                    self.db_writer.save_flow(&flow);
                     self.scan_and_store_flow(&flow);
                     for mut finding in self.plugin_manager.on_new_flow(&flow) {
                         if let Ok(id) = self.database.save_finding(&finding) {
@@ -1484,6 +1487,12 @@ impl App {
         let _ = self.database.save_intruder_results(&self.intruder_results);
         if let Err(error) = self.database.save_scope_rules(&self.scope_engine.rules) {
             self.project_message = format!("Autosave failed: {error}");
+        } else if self.db_writer.failures() > 0 {
+            self.project_message = format!(
+                "Autosaved {} ({} flow write(s) failed - see logs)",
+                self.database.path().display(),
+                self.db_writer.failures()
+            );
         } else {
             self.project_message = format!("Autosaved {}", self.database.path().display());
         }
@@ -1494,6 +1503,8 @@ impl App {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| self.database.path().to_path_buf());
         self.autosave_project();
+        // The copy must contain every queued flow, so drain the writer first.
+        self.db_writer.flush();
         match self.database.save_as(&destination) {
             Ok(path) => self.project_message = format!("Saved project to {}", path.display()),
             Err(error) => self.project_message = format!("Save failed: {error}"),
@@ -1511,7 +1522,22 @@ impl App {
 
         match Database::open(&path) {
             Ok(database) => {
+                // Start the new writer before switching projects: if it cannot be
+                // started we abort the open, because keeping the previous writer
+                // would silently persist this project's flows into the old database.
+                let writer = match DbWriter::spawn(database.path()) {
+                    Ok(writer) => writer,
+                    Err(error) => {
+                        self.project_message = format!(
+                            "Open failed: no flow persistence for {}: {error}",
+                            database.path().display()
+                        );
+                        return;
+                    }
+                };
+                self.db_writer.flush();
                 self.database = database;
+                self.db_writer = writer;
                 self.flow_store
                     .set_flows(self.database.load_flows(10_000, 0).unwrap_or_default());
                 if let Ok(tabs) = self.database.load_repeater_tabs() {
@@ -1660,9 +1686,9 @@ impl App {
             return;
         };
         let bytes = flow
-            .response_body
-            .or_else(|| Some(flow.request_body))
-            .unwrap_or_default();
+            .response_view()
+            .map(|view| view.body)
+            .unwrap_or_else(|| flow.request_view().body);
         self.decoder_input = String::from_utf8_lossy(&bytes).into_owned();
         self.current_tab = Tab::Decoder;
     }
@@ -1750,6 +1776,8 @@ impl App {
 
     fn quit(&mut self) {
         self.autosave_project();
+        // Blocking here is correct: leaving without the queue drained loses flows.
+        self.db_writer.flush();
         self.stop_proxy();
         self.should_quit = true;
     }
@@ -1849,12 +1877,20 @@ fn ai_context_from_flow(flow: &HttpFlow, redact: bool, max_chars: usize) -> AiCo
         }
     }
 
-    let request_body = redact_body(&String::from_utf8_lossy(&flow.request_body), redact);
-    let response_body = flow
-        .response_body
+    // The analyst must see the same bytes a browser would, not the compressed wire form.
+    let request_view = flow.request_view();
+    let response_view = flow.response_view();
+    let request_body = redact_body(&String::from_utf8_lossy(&request_view.body), redact);
+    let response_body = response_view
         .as_ref()
-        .map(|body| redact_body(&String::from_utf8_lossy(body), redact))
+        .map(|view| redact_body(&String::from_utf8_lossy(&view.body), redact))
         .unwrap_or_default();
+    let codings = request_view
+        .codings
+        .iter()
+        .chain(response_view.iter().flat_map(|view| view.codings.iter()))
+        .cloned()
+        .collect::<Vec<_>>();
     let summary = format!(
         "Flow #{}\nMethod: {}\nURL: {}\nStatus: {}\nHost: {}\nPath: {}\nResponse length: {} bytes\nRedaction: {}",
         flow.id,
@@ -1866,6 +1902,11 @@ fn ai_context_from_flow(flow: &HttpFlow, redact: bool, max_chars: usize) -> AiCo
         flow.response_len(),
         if redact { "enabled" } else { "disabled" }
     );
+    let summary = if codings.is_empty() {
+        summary
+    } else {
+        format!("{summary}\nContent-Encoding decoded for analysis: {}", codings.join(", "))
+    };
     let raw = format!(
         "REQUEST HEADERS\n{}\nREQUEST BODY PREVIEW\n{}\n\nRESPONSE HEADERS\n{}\nRESPONSE BODY PREVIEW\n{}",
         request_headers,
@@ -1951,23 +1992,27 @@ fn default_repeater_request() -> String {
 }
 
 fn flow_compare_text(flow: &HttpFlow) -> String {
-    if let Some(body) = &flow.response_body {
-        String::from_utf8_lossy(body).into_owned()
-    } else {
-        raw_request_from_flow(flow)
+    match flow.response_view() {
+        Some(view) => String::from_utf8_lossy(&view.body).into_owned(),
+        None => raw_request_from_flow(flow),
     }
 }
 
 fn raw_request_from_flow(flow: &HttpFlow) -> String {
+    // Repeater composes a fresh request, so a compressed captured body is decoded
+    // once here and its `Content-Encoding`/`Content-Length` headers dropped, rather
+    // than being replayed as bytes the origin would decode a second time.
+    let view = flow.request_view();
+    let headers = crate::net::decode::headers_for_decoded_body(&flow.request_headers, &view);
     let mut output = format!("{} {} HTTP/1.1\n", flow.method, flow.path());
-    for (name, value) in flow.request_headers.iter() {
+    for (name, value) in headers.iter() {
         output.push_str(name.as_str());
         output.push_str(": ");
         output.push_str(value.to_str().unwrap_or("<binary>"));
         output.push('\n');
     }
     output.push('\n');
-    output.push_str(&String::from_utf8_lossy(&flow.request_body));
+    output.push_str(&String::from_utf8_lossy(&view.body));
     output
 }
 
