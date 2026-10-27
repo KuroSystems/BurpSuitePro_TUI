@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -19,6 +19,7 @@ use crate::{
         scope::{ScopeEngine, ScopeRule, ScopeRuleType},
     },
     plugins::PluginManager,
+    policy::{Decision as PolicyDecision, Policy, Traffic},
     proxy::{run_proxy, LoggingHandler, ProxyConfig},
     scanner::{run_safe_active_scan, ActiveScanTarget, ActiveScannerEvent, Confidence, Finding, PassiveScanner, Severity},
     store::FlowStore,
@@ -122,6 +123,7 @@ pub struct App {
     pub rename_buffer: String,
     pub database: Database,
     pub db_writer: DbWriter,
+    pub policy: Arc<Policy>,
     pub project_message: String,
     pub scope_engine: ScopeEngine,
     pub selected_scope_rule: usize,
@@ -196,6 +198,8 @@ impl App {
             }
         }
         let db_writer = DbWriter::spawn(database.path()).expect("failed to start database writer");
+        let policy = Arc::new(Policy::load_default());
+        let policy_line = policy.status_line();
         let loaded_flows = database.load_flows(10_000, 0).unwrap_or_default();
         flow_store.set_flows(loaded_flows);
         let loaded_repeater_tabs = database.load_repeater_tabs().unwrap_or_default();
@@ -212,13 +216,20 @@ impl App {
         let scope_rules = database.load_scope_rules().unwrap_or_default();
         let intruder_results = database.load_intruder_results().unwrap_or_default();
         let findings = database.load_findings().unwrap_or_default();
-        let project_message = format!("Project: {}", database.path().display());
+        let project_message = format!(
+            "Project: {} · {}",
+            database.path().display(),
+            policy_line
+        );
         Self {
             current_tab: Tab::Proxy,
             should_quit: false,
             tick_count: 0,
             proxy_status: ProxyStatus::Stopped,
-            proxy_message: format!("Proxy ready on {}", proxy_config.listen_addr),
+            proxy_message: format!(
+                "Proxy ready on {} · {}",
+                proxy_config.listen_addr, policy_line
+            ),
             proxy_config,
             flow_store,
             selected_flow: None,
@@ -235,6 +246,7 @@ impl App {
             rename_buffer: String::new(),
             database,
             db_writer,
+            policy,
             project_message,
             scope_engine: ScopeEngine::new(scope_rules),
             selected_scope_rule: 0,
@@ -424,6 +436,17 @@ impl App {
                     item.total = total;
                     item.running = true;
                 }
+            }
+            ActiveScannerEvent::Blocked { target, reason } => {
+                self.project_message = format!("Active scan blocked for {target}: {reason}");
+                if let Some(item) = self
+                    .active_scan_targets
+                    .iter_mut()
+                    .find(|item| item.url.as_str() == target.as_str())
+                {
+                    item.running = false;
+                }
+                self.active_scan_task = None;
             }
             ActiveScannerEvent::Finished { target } => {
                 if let Some(item) = self.active_scan_targets.iter_mut().find(|item| item.url.as_str() == target.as_str()) {
@@ -1220,7 +1243,12 @@ impl App {
         }
         let config = self.proxy_config.clone();
         let listen_addr = config.listen_addr;
-        self.proxy_task = Some(run_proxy(config, LoggingHandler, self.flow_store.clone()));
+        self.proxy_task = Some(run_proxy(
+            config,
+            LoggingHandler,
+            self.flow_store.clone(),
+            Arc::clone(&self.policy),
+        ));
         self.proxy_status = ProxyStatus::Running;
         self.proxy_message = format!("Proxy listening on {listen_addr}");
     }
@@ -1303,8 +1331,9 @@ impl App {
         let tab_id = tab.id;
         let request_text = tab.request_text.clone();
         let tx = self.repeater_tx.clone();
+        let policy = Arc::clone(&self.policy);
         tokio::spawn(async move {
-            let response = send_raw_request(request_text).await;
+            let response = send_raw_request(request_text, policy).await;
             let _ = tx
                 .send(RepeaterEvent::SendComplete { tab_id, response })
                 .await;
@@ -1390,7 +1419,11 @@ impl App {
         self.intruder_selected_result = 0;
         self.intruder_running = true;
         self.intruder_paused = false;
-        self.intruder_task = Some(IntruderEngine::spawn(config, self.intruder_tx.clone()));
+        self.intruder_task = Some(IntruderEngine::spawn(
+            config,
+            self.intruder_tx.clone(),
+            Arc::clone(&self.policy),
+        ));
     }
 
     fn stop_intruder_attack(&mut self) {
@@ -1673,8 +1706,9 @@ impl App {
         target.completed = 0;
         let url = target.url.clone();
         let tx = self.active_scanner_tx.clone();
+        let policy = Arc::clone(&self.policy);
         self.active_scan_task = Some(tokio::spawn(async move {
-            run_safe_active_scan(url, tx).await;
+            run_safe_active_scan(url, tx, policy).await;
         }));
     }
 
@@ -1778,6 +1812,7 @@ impl App {
         self.autosave_project();
         // Blocking here is correct: leaving without the queue drained loses flows.
         self.db_writer.flush();
+        self.policy.flush_audit();
         self.stop_proxy();
         self.should_quit = true;
     }
@@ -2016,8 +2051,11 @@ fn raw_request_from_flow(flow: &HttpFlow) -> String {
     output
 }
 
-async fn send_raw_request(raw: String) -> Result<HttpResponse, String> {
+async fn send_raw_request(raw: String, policy: Arc<Policy>) -> Result<HttpResponse, String> {
     let parsed = ParsedRequest::parse(&raw)?;
+    if let PolicyDecision::Deny(reason) = policy.authorize(Traffic::Generated, &parsed.method, &parsed.url) {
+        return Err(format!("blocked by engagement envelope: {reason}"));
+    }
     let started_at = Instant::now();
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

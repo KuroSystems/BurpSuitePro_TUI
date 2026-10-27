@@ -5,6 +5,8 @@ use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::{mpsc, Semaphore}, time::{self, Duration}};
 
+use crate::policy::{Decision, Policy, Traffic};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttackType {
     Sniper,
@@ -218,7 +220,11 @@ pub fn substitute_positions(request: &str, positions: &[Position], payloads: &[S
 pub struct IntruderEngine;
 
 impl IntruderEngine {
-    pub fn spawn(config: AttackConfig, tx: mpsc::Sender<IntruderEvent>) -> tokio::task::JoinHandle<()> {
+    pub fn spawn(
+        config: AttackConfig,
+        tx: mpsc::Sender<IntruderEvent>,
+        policy: Arc<Policy>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let assignments = generate_payload_assignments(&config);
             let semaphore = Arc::new(Semaphore::new(config.concurrency.max(1)));
@@ -229,7 +235,17 @@ impl IntruderEngine {
                 let _ = tx.send(IntruderEvent::Finished).await;
                 return;
             };
-            let delay = if config.rps == 0 { Duration::from_millis(0) } else { Duration::from_millis((1000 / config.rps.max(1)) as u64) };
+            let delay = if config.rps == 0 {
+                Duration::from_millis(0)
+            } else {
+                Duration::from_millis((1000 / config.rps.max(1)) as u64)
+            };
+            // The engagement envelope's ceiling wins over the attack's own setting:
+            // per-tab configuration must not be able to exceed the authorization.
+            let delay = match policy.min_delay() {
+                Some(minimum) => delay.max(minimum),
+                None => delay,
+            };
             let mut throttle = time::interval(delay.max(Duration::from_millis(1)));
             let mut handles = Vec::new();
 
@@ -239,6 +255,30 @@ impl IntruderEngine {
                 let Ok(permit) = permit else { break; };
                 let raw_request = substitute_positions(&config.target_request, &config.positions, &payloads);
                 let payload_label = payloads.join(", ");
+
+                // Check the envelope before spawning: a denied payload is reported as
+                // a result row so the blast radius is visible, not silently skipped.
+                let blocked = match ParsedRequest::parse(&raw_request) {
+                    Ok(parsed) => match policy.authorize(Traffic::Generated, &parsed.method, &parsed.url) {
+                        Decision::Allow => None,
+                        Decision::Deny(reason) => Some(reason.to_string()),
+                    },
+                    Err(error) => Some(format!("invalid request: {error}")),
+                };
+                if let Some(reason) = blocked {
+                    let _ = tx
+                        .send(IntruderEvent::Result(IntruderResult {
+                            id: index as u64 + 1,
+                            payload_label,
+                            status: None,
+                            length: 0,
+                            time_ms: 0,
+                            error: Some(format!("blocked: {reason}")),
+                        }))
+                        .await;
+                    continue;
+                }
+
                 let client = client.clone();
                 let tx = tx.clone();
                 handles.push(tokio::spawn(async move {

@@ -24,10 +24,62 @@ controls below overstate the tool:
 | Plugins | Discovers and lists WASM manifests; no runtime is wired in yet |
 | AI assistant | Working with a local Ollama endpoint; redaction is best-effort, not a security boundary |
 | Scope rules | Advisory: used for highlighting and UI guards, **not** enforced by the proxy |
+| Engagement envelope (`.proxima/engagement.yaml`) | Enforced on every outbound path — proxied, Repeater, Intruder, active scan. Optional: with no envelope the tool runs unrestricted and says so |
 
 Test coverage is thin (it is being built up); treat this as a tool for authorized
 lab work and your own targets, not as a hardened production service. See
 [`SECURITY.md`](SECURITY.md) for the limitations that matter.
+
+## Engagement envelope
+
+Scope in most proxies is a hint the tool itself does not check. Proxima is built the
+other way around: one gate every outbound request passes through, and a file that
+decides what that gate allows.
+
+```bash
+cp examples/engagement.yaml .proxima/engagement.yaml   # or set PROXIMA_ENVELOPE
+```
+
+```yaml
+apiVersion: proxima.dev/v1alpha1
+kind: Engagement
+metadata:
+  id: ACME-2026-014
+scope:
+  include: ['^https://staging\.acme\.test/']
+  exclude: ['/admin', '/logout']          # exclusions always win
+limits:
+  window: { from: 2026-10-01T00:00:00+05:30, to: 2026-10-08T00:00:00+05:30 }
+  max_rps: 10                             # generated traffic only, never the browser
+  max_requests_total: 20000
+  deny_methods: [DELETE]
+  halt_on: { status_429: 25, status_5xx_rate: 0.25, min_samples: 50 }
+audit:
+  enabled: true
+  log: .proxima/audit-ACME-2026-014.jsonl
+```
+
+What it does, in order of how much it matters:
+
+- **Every** outbound request is checked — proxied traffic after interception (so a
+  rewrite cannot escape the check), Repeater sends, Intruder payloads, active-scan
+  probes (each probe checks the exact URL and method it is about to send, not the
+  target it started from).
+- **Fail closed.** A malformed envelope, a bad regex or an unknown field denies all
+  traffic instead of quietly running unrestricted. An empty `scope.include` is an
+  error, not "everything".
+- **Halt conditions**, not just limits: repeated `429`s or a `5xx` wave above a
+  configurable rate stop the engagement and require a human, instead of letting a
+  fuzzer finish the job.
+- **Hash-chained audit log.** Every allow, deny and halt is an appended JSON line
+  whose hash covers the previous line, so edited or reordered entries are detectable
+  (`proxima::policy::audit::verify`). It proves *integrity*, not *authorship*:
+  whoever can write the file can rewrite the chain, and tail truncation needs an
+  external anchor to detect. Said plainly because a log people over-trust is worse
+  than no log.
+
+The Settings screen shows which mode is active, the denial count and the audit
+length, so "is this thing actually constrained?" is answerable without reading code.
 
 ## Keyboard controls
 

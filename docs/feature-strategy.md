@@ -679,3 +679,40 @@ Still open from Phase 0:
   `jwt_decode`, `ScopeEngine::is_in_scope`, and `decode_blob`.
 - **Config file and `--help`.** Still environment-variables-only; belongs with the
   CLI work in F5.
+
+## 10. F4 landed: the choke point is real
+
+The policy layer is in `src/policy/` — `envelope.rs` (parse + compile + validate),
+`audit.rs` (hash-chained JSONL), `mod.rs` (the gate). What changed is not the
+existence of scope, it is *where* scope is decided.
+
+**One gate, four entry points.** `Policy::authorize(traffic, method, uri)` is called
+from `proxy/server.rs` (after the intercept handler, so a rewrite cannot smuggle a
+request past the check), `app.rs::send_raw_request` (Repeater), `models/intruder.rs`
+(per payload, before the request is spawned) and `scanner/active.rs` (per probe, on
+the exact URL and method — a probe that appends `/../../../etc/passwd` is a different
+request and is checked as one). The AI assistant's Ollama calls are deliberately
+*not* gated: they go to the operator's model endpoint, not to the target.
+
+**Three modes, one of which is failure.** `Unrestricted` (no envelope: allow, audit
+nothing, say so in the UI), `Enforced`, and `Broken` (envelope requested but
+unloadable: deny everything). There is no "envelope set but ignored" state, which is
+the state every other tool's scope UI is effectively in.
+
+**Rate limiting is asymmetric on purpose.** `limits.max_rps` becomes a minimum gap
+for *generated* traffic only (Intruder, active checks, Repeater). Delaying the
+operator's browser does not reduce risk, it just makes the proxy feel broken, so
+proxied traffic is never throttled — and the envelope's ceiling still wins over a
+tab's own `rps` setting.
+
+**Audit.** `sha256(prev || "\n" || payload)` per line, genesis is 64 zeros. `open()`
+re-verifies the file before appending, so a tampered log refuses to grow. Documented
+blind spots, kept in the module header rather than in a changelog: tail truncation is
+undetectable without an external anchor, and the chain proves integrity, not
+authorship. Signing an envelope bundle is the natural next layer.
+
+**Still open on F4:** envelope signing/attestation; an `--envelope` flag once the CLI
+exists (today it is `PROXIMA_ENVELOPE` or `.proxima/engagement.yaml`); exporting the
+audit chain to a bundle for the F1 Evidence Ledger; and a "resume engagement" action,
+since a tripped halt currently requires a restart (deliberate for now — the point of a
+halt is that it is not one keystroke away from being ignored).

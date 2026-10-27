@@ -5,6 +5,7 @@ mod events;
 mod models;
 mod net;
 mod plugins;
+mod policy;
 mod proxy;
 mod scanner;
 mod store;

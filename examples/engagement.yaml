@@ -1,0 +1,55 @@
+# A worked engagement envelope.
+#
+# Copy this to `.proxima/engagement.yaml` (picked up automatically) or point
+# PROXIMA_ENVELOPE at it. Unknown keys are a hard error, so a typo in a field name
+# can never silently widen the scope — for example `scopes:` instead of `scope:`
+# refuses to load instead of running unrestricted.
+#
+# With no envelope at all the tool runs unrestricted and *says so* in Settings;
+# it never pretends a scope is enforced when it is not.
+apiVersion: proxima.dev/v1alpha1
+kind: Engagement
+
+metadata:
+  id: "ACME-2026-014"
+  operator: "priya@example.test"
+  authorization:
+    reference: "SOW-2026-014 §3.2"   # the paperwork that justifies this
+    date: "2026-10-01"
+
+scope:
+  # At least one include entry is required: an empty list is an error, not
+  # "everything". Each entry is a regular expression matched against the full URI.
+  include:
+    - '^https://staging\.acme\.test/'
+    - '^https://api\.staging\.acme\.test/v1/'
+  # Exclusions always win over inclusions, whatever the order.
+  exclude:
+    - '^https://staging\.acme\.test/admin/'
+    - '/logout'
+    - '/delete'
+
+limits:
+  # Requests outside this window are refused. Either bound may be omitted.
+  window:
+    from: "2026-10-01T00:00:00+05:30"
+    to: "2026-10-08T00:00:00+05:30"
+  # Converted to a minimum gap between *generated* requests (Intruder payloads,
+  # active checks, Repeater). Proxied browser traffic is not slowed down.
+  max_rps: 10
+  # Hard ceiling across the whole engagement, counted after the audit log is open.
+  max_requests_total: 20000
+  # Allow-list wins over deny-list.
+  methods: ["GET", "POST", "PUT", "PATCH", "OPTIONS", "HEAD"]
+  deny_methods: ["DELETE"]
+  halt_on:
+    # Stop the engagement, not just one tab, after this many 429s...
+    status_429: 25
+    # ...or when more than this fraction of responses are 5xx, but only once
+    # there are enough samples to mean anything.
+    status_5xx_rate: 0.25
+    min_samples: 50
+
+audit:
+  enabled: true
+  log: ".proxima/audit-ACME-2026-014.jsonl"

@@ -19,6 +19,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    policy::{Decision as PolicyDecision, DenyReason, Policy, Traffic},
     models::{
         flow::HttpFlow,
         websocket::{WebSocketDirection, WebSocketFrameRecord},
@@ -35,14 +36,24 @@ use super::{
 type ProxyBody = BoxBody<Bytes, Infallible>;
 type SharedHandler<H> = Arc<Mutex<H>>;
 
-pub fn run_proxy<H>(config: ProxyConfig, handler: H, flow_store: FlowStore) -> JoinHandle<Result<()>>
+pub fn run_proxy<H>(
+    config: ProxyConfig,
+    handler: H,
+    flow_store: FlowStore,
+    policy: Arc<Policy>,
+) -> JoinHandle<Result<()>>
 where
     H: InterceptHandler,
 {
-    tokio::spawn(async move { serve_proxy(config, handler, flow_store).await })
+    tokio::spawn(async move { serve_proxy(config, handler, flow_store, policy).await })
 }
 
-async fn serve_proxy<H>(config: ProxyConfig, handler: H, flow_store: FlowStore) -> Result<()>
+async fn serve_proxy<H>(
+    config: ProxyConfig,
+    handler: H,
+    flow_store: FlowStore,
+    policy: Arc<Policy>,
+) -> Result<()>
 where
     H: InterceptHandler,
 {
@@ -67,6 +78,7 @@ where
         let handler = Arc::clone(&handler);
         let client = client.clone();
         let flow_store = flow_store.clone();
+        let policy = Arc::clone(&policy);
 
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
@@ -77,6 +89,7 @@ where
                     Arc::clone(&ca),
                     Arc::clone(&handler),
                     flow_store.clone(),
+                    Arc::clone(&policy),
                 )
             });
 
@@ -99,14 +112,15 @@ async fn route_proxy_request<H>(
     ca: Arc<CaAuthority>,
     handler: SharedHandler<H>,
     flow_store: FlowStore,
+    policy: Arc<Policy>,
 ) -> Result<Response<ProxyBody>, Infallible>
 where
     H: InterceptHandler,
 {
     let response = if request.method() == Method::CONNECT {
-        handle_connect(request, client, ca, handler, flow_store).await
+        handle_connect(request, client, ca, handler, flow_store, policy).await
     } else {
-        handle_plain_http(request, client, handler, None, flow_store).await
+        handle_plain_http(request, client, handler, None, flow_store, policy).await
     };
 
     Ok(response.unwrap_or_else(error_response))
@@ -118,6 +132,7 @@ async fn handle_connect<H>(
     ca: Arc<CaAuthority>,
     handler: SharedHandler<H>,
     flow_store: FlowStore,
+    policy: Arc<Policy>,
 ) -> Result<Response<ProxyBody>>
 where
     H: InterceptHandler,
@@ -138,7 +153,7 @@ where
     tokio::spawn(async move {
         match hyper::upgrade::on(request).await {
             Ok(upgraded) => {
-                if let Err(error) = mitm_tls_connection(upgraded, domain, authority, client, ca, handler, flow_store).await {
+                if let Err(error) = mitm_tls_connection(upgraded, domain, authority, client, ca, handler, flow_store, policy).await {
                     warn!(?error, "MITM tunnel failed");
                 }
             }
@@ -160,6 +175,7 @@ async fn mitm_tls_connection<H>(
     ca: Arc<CaAuthority>,
     handler: SharedHandler<H>,
     flow_store: FlowStore,
+    policy: Arc<Policy>,
 ) -> Result<()>
 where
     H: InterceptHandler,
@@ -188,6 +204,7 @@ where
             Arc::clone(&handler),
             Some(authority.clone()),
             flow_store.clone(),
+            Arc::clone(&policy),
         )
     });
 
@@ -217,6 +234,7 @@ async fn handle_plain_http<H>(
     handler: SharedHandler<H>,
     tls_authority: Option<String>,
     flow_store: FlowStore,
+    policy: Arc<Policy>,
 ) -> Result<Response<ProxyBody>>
 where
     H: InterceptHandler,
@@ -244,7 +262,28 @@ where
         return Ok(proxy_response_to_hyper(response));
     }
 
+    // The envelope is checked after the intercept handler ran, so a handler that
+    // rewrites the request cannot move it out of scope after the check. This is the
+    // only path out of the process: browser, Repeater, plugin or AI proposal all
+    // arrive here.
+    let method_for_policy = request.method().as_str().to_string();
+    let uri_for_policy = request.uri().to_string();
+    if let PolicyDecision::Deny(reason) =
+        policy.authorize(Traffic::Proxied, &method_for_policy, &uri_for_policy)
+    {
+        warn!(
+            method = %method_for_policy,
+            uri = %uri_for_policy,
+            %reason,
+            "request blocked by engagement envelope"
+        );
+        let response = blocked_response(&reason);
+        record_flow(&flow_store, id, timestamp, started_at, &request, &response);
+        return Ok(proxy_response_to_hyper(response));
+    }
+
     let mut response = forward_request(&client, request.clone()).await?;
+    policy.observe(response.status().as_u16());
     {
         let mut handler = handler.lock().await;
         handler.on_response(&mut response);
@@ -348,6 +387,18 @@ async fn forward_request(client: &Client, request: ProxyRequest) -> Result<Proxy
     Ok(response_builder
         .body(body)
         .wrap_err("failed to build proxy response")?)
+}
+
+/// A policy denial is a normal response, not an error: it is recorded as a flow so
+/// the operator sees the block in the traffic table, with the reason in the body.
+fn blocked_response(reason: &DenyReason) -> ProxyResponse {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Bytes::from(format!(
+            "blocked by engagement envelope: {reason}\n"
+        )))
+        .expect("static blocked response is valid")
 }
 
 fn proxy_response_to_hyper(response: ProxyResponse) -> Response<ProxyBody> {

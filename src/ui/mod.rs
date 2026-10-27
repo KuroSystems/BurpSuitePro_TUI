@@ -146,6 +146,13 @@ fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
     let status_line = format!("Proxy status: {}", app.proxy_status.label());
     let ca_line = format!("CA certificate: {}", app.proxy_config.ca_cert_path.display());
     let key_line = format!("CA private key: {}", app.proxy_config.ca_key_path.display());
+    let scope_line = format!("Engagement scope: {}", app.policy.status_line());
+    let requests_line = format!(
+        "Authorized requests: {} · denials: {} · audit entries: {}",
+        app.policy.requests_used(),
+        app.policy.denials(),
+        app.policy.audit_entries()
+    );
     render_placeholder(
         frame,
         area,
@@ -158,6 +165,9 @@ fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
             status_line.as_str(),
             app.proxy_message.as_str(),
             app.project_message.as_str(),
+            scope_line.as_str(),
+            requests_line.as_str(),
+            "  PROXIMA_ENVELOPE - path to engagement.yaml (scope is NOT enforced when unset)",
             "  Ctrl+S - save project (PROXIMA_SAVE_AS optional)",
             "  Ctrl+O - open project (PROXIMA_OPEN_PROJECT/PROXIMA_PROJECT)",
             ca_line.as_str(),
