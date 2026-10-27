@@ -81,6 +81,16 @@ What it does, in order of how much it matters:
 The Settings screen shows which mode is active, the denial count and the audit
 length, so "is this thing actually constrained?" is answerable without reading code.
 
+The format is specified separately in [`docs/engagement-envelope.md`](docs/engagement-envelope.md)
+so another tool can implement it, and the log can be checked without a Rust
+toolchain — a second implementation, not a marketing claim:
+
+```bash
+python3 tools/verify_audit_log.py .proxima/audit-ACME-2026-014.jsonl
+# OK .proxima/audit-ACME-2026-014.jsonl: 1284 entries, head hash 0ecd…
+python3 tools/verify_audit_log.py --self-test   # proves the verifier rejects edits
+```
+
 ## Keyboard controls
 
 - `Left` / `Right` or `Shift+Tab` / `Tab`: switch tabs

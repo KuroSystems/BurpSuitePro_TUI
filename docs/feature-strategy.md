@@ -711,6 +711,13 @@ blind spots, kept in the module header rather than in a changelog: tail truncati
 undetectable without an external anchor, and the chain proves integrity, not
 authorship. Signing an envelope bundle is the natural next layer.
 
+**Specified for other tools.** `docs/engagement-envelope.md` writes the file format
+and the log format down as a specification (validation rules, decision order, fail-closed
+states, canonical JSON, chaining), and `tools/verify_audit_log.py` is an independent
+verifier with its own self-test. `tests/fixtures/audit-sample.jsonl` was written by that
+verifier and is checked by a Rust test, which is the cheapest available way to find out
+whether the format is *specified* or merely *implemented*.
+
 **Still open on F4:** envelope signing/attestation; an `--envelope` flag once the CLI
 exists (today it is `PROXIMA_ENVELOPE` or `.proxima/engagement.yaml`); exporting the
 audit chain to a bundle for the F1 Evidence Ledger; and a "resume engagement" action,

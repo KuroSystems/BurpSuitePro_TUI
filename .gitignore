@@ -5,3 +5,5 @@ certs/
 *.db
 *.db-wal
 *.db-shm
+# Local engagement envelopes and audit logs are per-engagement, not source.
+.proxima/

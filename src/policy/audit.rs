@@ -381,6 +381,18 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    /// Cross-implementation check: this fixture was written by
+    /// `tools/verify_audit_log.py`, so the canonical serialisation of an entry is
+    /// pinned by something other than this file's own writer. If `verify` starts
+    /// rejecting it, the on-disk format changed and every existing log became
+    /// unreadable.
+    #[test]
+    fn verifies_a_log_written_by_another_implementation() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audit-sample.jsonl");
+        let entries = verify(&path).expect("fixture chain verifies");
+        assert_eq!(entries, 3);
+    }
+
     #[test]
     fn tail_truncation_is_a_known_blind_spot() {
         // Documented limitation: dropping the last entries leaves a consistent
