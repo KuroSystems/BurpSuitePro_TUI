@@ -340,14 +340,15 @@ mod tests {
 
     #[test]
     fn decoding_never_panics_on_hostile_input() {
-        for fixture in [
+        let fixtures: [&[u8]; 6] = [
             GZIP_FIXTURE,
             ZLIB_FIXTURE,
             RAW_DEFLATE_FIXTURE,
             DOUBLE_GZIP_FIXTURE,
             &[0u8; 32],
             &[0xff; 32],
-        ] {
+        ];
+        for fixture in fixtures {
             for coding in ["gzip", "deflate", "br", "zstd"] {
                 let _ = decoded_body(&headers_with_encoding(coding), &Bytes::copy_from_slice(fixture));
             }
