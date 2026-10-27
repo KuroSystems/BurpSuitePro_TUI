@@ -66,6 +66,7 @@ impl ActiveCheck for PathTraversalProbe {
             match client.get(url.clone()).send().await {
                 Ok(response) => {
                     let status = response.status().as_u16();
+                    policy.observe(status);
                     let body = response.text().await.unwrap_or_default();
                     if status == 200 && body.contains("root:") {
                         vec![active_finding(0, self.id(), self.name(), Severity::High, Confidence::Firm, url.as_str(), "passwd-like content returned")]
@@ -89,6 +90,7 @@ impl ActiveCheck for ReflectedXssProbe {
             }
             match client.get(url.clone()).send().await {
                 Ok(response) => {
+                    policy.observe(response.status().as_u16());
                     let body = response.text().await.unwrap_or_default();
                     if body.contains("<proxima-test>") {
                         vec![active_finding(0, self.id(), self.name(), Severity::Medium, Confidence::Tentative, url.as_str(), "probe marker reflected in response")]
@@ -110,6 +112,9 @@ impl ActiveCheck for VerbTamperingProbe {
             }
             let get = client.get(target.clone()).send().await;
             let post = client.post(target.clone()).send().await;
+            for status in [&get, &post].into_iter().flat_map(|response| response.as_ref().ok()) {
+                policy.observe(status.status().as_u16());
+            }
             match (get, post) {
                 (Ok(get), Ok(post)) if get.status().as_u16() == 200 && post.status().as_u16() == 200 => {
                     let get_len = get.bytes().await.map(|b| b.len()).unwrap_or_default();

@@ -281,9 +281,13 @@ impl IntruderEngine {
 
                 let client = client.clone();
                 let tx = tx.clone();
+                let policy = Arc::clone(&policy);
                 handles.push(tokio::spawn(async move {
                     let _permit = permit;
                     let result = send_attack_request(index as u64 + 1, payload_label, raw_request, client).await;
+                    if let Some(status) = result.status {
+                        policy.observe(status);
+                    }
                     let _ = tx.send(IntruderEvent::Result(result)).await;
                 }));
             }

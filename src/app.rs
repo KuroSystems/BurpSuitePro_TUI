@@ -2075,6 +2075,9 @@ async fn send_raw_request(raw: String, policy: Arc<Policy>) -> Result<HttpRespon
         .await
         .map_err(|error| error.to_string())?;
     let status = response.status();
+    // Generated traffic feeds the same halt conditions as proxied traffic: this is
+    // where 429s and 5xx waves actually come from.
+    policy.observe(status.as_u16());
     let reason = status.canonical_reason().unwrap_or("").to_string();
     let headers = response.headers().clone();
     let body = response.bytes().await.map_err(|error| error.to_string())?;
